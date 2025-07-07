@@ -1,73 +1,123 @@
 import React from "react";
-import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
-import PromotionsPage from "./pages/PromotionsPage";
-import ServicesPage from "./pages/ServicesPage";
-import SpecialitiesPage from "./pages/SpecialitiesPage";
-import PlanningsPage from "./pages/PlanningsPage";
-import StudentSchedulesPage from "./pages/StudentSchedulesPage";
-import "./App.css";
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Link,
+  useLocation,
+} from "react-router-dom";
+import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
+import DashboardPage from "./pages/DashboardPage";
+import StudentsPage from "./pages/StudentsPage";
+import PlanningPage from "./pages/PlanningPage";
+import SettingsPage from "./pages/SettingsPage";
+import ErrorBoundary from "./components/ErrorBoundary";
+import {
+  LayoutDashboard,
+  Users,
+  Calendar,
+  Settings,
+  GraduationCap,
+} from "lucide-react";
+
+function Navigation() {
+  const location = useLocation();
+
+  const navItems = [
+    {
+      path: "/",
+      label: "Tableau de Bord",
+      icon: LayoutDashboard,
+      description: "Vue d'ensemble et statistiques",
+    },
+    {
+      path: "/students",
+      label: "Étudiants",
+      icon: Users,
+      description: "Gestion des étudiants et promotions",
+    },
+    {
+      path: "/planning",
+      label: "Planification",
+      icon: Calendar,
+      description: "Plannings et calendriers des stages",
+    },
+    {
+      path: "/settings",
+      label: "Configuration",
+      icon: Settings,
+      description: "Services, spécialités et paramètres",
+    },
+  ];
+
+  return (
+    <nav className="bg-background border-b border-border">
+      <div className="max-w-7xl mx-auto px-4">
+        <div className="flex justify-between items-center py-4">
+          {/* Logo and Title */}
+          <div className="flex items-center space-x-3">
+            <div className="flex items-center justify-center w-10 h-10 bg-primary rounded-lg">
+              <GraduationCap className="h-6 w-6 text-primary-foreground" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-foreground">
+                Gestion des Stages
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Système de planification paramédicale
+              </p>
+            </div>
+          </div>
+
+          {/* Navigation Items */}
+          <div className="flex space-x-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = location.pathname === item.path;
+
+              return (
+                <Link key={item.path} to={item.path}>
+                  <Button
+                    variant={isActive ? "default" : "ghost"}
+                    className="flex items-center space-x-2 h-auto py-3 px-4"
+                  >
+                    <Icon className="h-4 w-4" />
+                    <div className="flex flex-col items-start">
+                      <span className="text-sm font-medium">{item.label}</span>
+                      <span className="text-xs opacity-75">
+                        {item.description}
+                      </span>
+                    </div>
+                  </Button>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </nav>
+  );
+}
 
 function App() {
   return (
-    <Router>
-      <div className="min-h-screen bg-gray-50">
-        {/* Navigation */}
-        <nav className="bg-blue-600 text-white shadow-lg">
-          <div className="max-w-7xl mx-auto px-4">
-            <div className="flex justify-between items-center py-4">
-              <h1 className="text-2xl font-bold">
-                Gestion des Stages Paramédicaux
-              </h1>
-              <div className="flex space-x-4">
-                <Link
-                  to="/promotions"
-                  className="px-4 py-2 rounded-lg transition-colors bg-blue-500 hover:bg-blue-700"
-                >
-                  Promotions
-                </Link>
-                <Link
-                  to="/services"
-                  className="px-4 py-2 rounded-lg transition-colors bg-blue-500 hover:bg-blue-700"
-                >
-                  Services
-                </Link>
-                <Link
-                  to="/specialities"
-                  className="px-4 py-2 rounded-lg transition-colors bg-blue-500 hover:bg-blue-700"
-                >
-                  Spécialités
-                </Link>
-                <Link
-                  to="/plannings"
-                  className="px-4 py-2 rounded-lg transition-colors bg-blue-500 hover:bg-blue-700"
-                >
-                  Plannings
-                </Link>
-                <Link
-                  to="/student-schedules"
-                  className="px-4 py-2 rounded-lg transition-colors bg-blue-500 hover:bg-blue-700"
-                >
-                  Plannings Étudiants
-                </Link>
-              </div>
-            </div>
-          </div>
-        </nav>
-        <main className="max-w-7xl mx-auto py-8 px-4">
-          <Routes>
-            <Route path="/promotions" element={<PromotionsPage />} />
-            <Route path="/services" element={<ServicesPage />} />
-            <Route path="/specialities" element={<SpecialitiesPage />} />
-            <Route path="/plannings" element={<PlanningsPage />} />
-            <Route
-              path="/student-schedules"
-              element={<StudentSchedulesPage />}
-            />
-            <Route path="*" element={<PromotionsPage />} />
-          </Routes>
-        </main>
-      </div>
-    </Router>
+    <ErrorBoundary>
+      <Router>
+        <div className="min-h-screen bg-background">
+          <Navigation />
+          <main className="max-w-7xl mx-auto py-8 px-4">
+            <Routes>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/students" element={<StudentsPage />} />
+              <Route path="/planning" element={<PlanningPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="*" element={<DashboardPage />} />
+            </Routes>
+          </main>
+        </div>
+      </Router>
+    </ErrorBoundary>
   );
 }
 

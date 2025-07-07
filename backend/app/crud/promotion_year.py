@@ -7,159 +7,156 @@ import uuid
 from .base import CRUDBase
 from ..models import PromotionYear, Promotion, Speciality
 from ..schemas import PromotionYearCreate, PromotionYearBase
+from .utils import validate_string_length, handle_db_commit, handle_unique_constraint, db_commit_context
+
 
 class CRUDPromotionYear(CRUDBase[PromotionYear, PromotionYearCreate, PromotionYearBase]):
-    def create_promotion_years_for_promotion(
-        self, db: Session, *, promotion_id: str
-    ) -> List[PromotionYear]:
-        """Create all years for a promotion based on its speciality duration"""
-        # Get the promotion with its speciality
-        promotion = db.query(Promotion).filter(Promotion.id == promotion_id).first()
-        if not promotion:
-            raise HTTPException(status_code=404, detail="Promotion non trouvée")
-        
-        # Get duration from speciality or default to 3 years
-        duration = 3  # default
-        if promotion.speciality:
-            duration = promotion.speciality.duree_annees
-        
-        promotion_years = []
-        for year_level in range(1, duration + 1):
-            calendar_year = promotion.annee + (year_level - 1)
-            
-            promotion_year = PromotionYear(
-                id=str(uuid.uuid4()),
-                promotion_id=promotion_id,
-                annee_niveau=year_level,
-                annee_calendaire=calendar_year,
-                nom=f"{year_level}{'ère' if year_level == 1 else 'ème'} année",
-                is_active=(year_level == 1)  # Only first year is active initially
-            )
-            db.add(promotion_year)
-            promotion_years.append(promotion_year)
-        
-        db.commit()
-        return promotion_years
-    
+    def get_by_promotion(self, db: Session, *, promotion_id: str) -> List[PromotionYear]:
+        return db.query(PromotionYear).filter(PromotionYear.promotion_id == promotion_id).order_by(PromotionYear.annee_niveau).all()
+
     def get_by_promotion_id(self, db: Session, *, promotion_id: str) -> List[PromotionYear]:
-        """Get all years for a specific promotion"""
-        return db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promotion_id
-        ).order_by(PromotionYear.annee_niveau).all()
-    
+        """Alias for get_by_promotion to match endpoint expectations"""
+        return self.get_by_promotion(db=db, promotion_id=promotion_id)
+
     def get_active_year(self, db: Session, *, promotion_id: str) -> Optional[PromotionYear]:
-        """Get the currently active year for a promotion"""
+        """Get the active promotion year for a promotion"""
         return db.query(PromotionYear).filter(
             PromotionYear.promotion_id == promotion_id,
             PromotionYear.is_active == True
         ).first()
-    
-    def activate_year(self, db: Session, *, promotion_year_id: str) -> PromotionYear:
-        """Activate a specific year and deactivate others in the same promotion"""
-        promotion_year = self.get(db=db, id=promotion_year_id)
-        if not promotion_year:
-            raise HTTPException(status_code=404, detail="Année de promotion non trouvée")
-        
+
+    def activate_year(self, db: Session, *, year_id: str) -> PromotionYear:
+        """Activate a promotion year and deactivate others in the same promotion"""
+        year = self.get(db=db, id=year_id)
+        if not year:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Année de promotion non trouvée"
+            )
+
         # Deactivate all years in the same promotion
         db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promotion_year.promotion_id
+            PromotionYear.promotion_id == year.promotion_id
         ).update({"is_active": False})
-        
+
         # Activate the selected year
-        promotion_year.is_active = True
-        db.commit()
-        db.refresh(promotion_year)
-        
-        return promotion_year
-    
-    def get_by_year_level(self, db: Session, *, promotion_id: str, year_level: int) -> Optional[PromotionYear]:
-        """Get a specific year level for a promotion"""
-        return db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promotion_id,
-            PromotionYear.annee_niveau == year_level
-        ).first()
+        year.is_active = True
 
-promotion_year = CRUDPromotionYear(PromotionYear) 
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from fastapi import HTTPException, status
-import uuid
+        try:
+            db.commit()
+            db.refresh(year)
+            return year
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Erreur lors de l'activation: {str(e)}"
+            )
 
-from .base import CRUDBase
-from ..models import PromotionYear, Promotion, Speciality
-from ..schemas import PromotionYearCreate, PromotionYearBase
-
-class CRUDPromotionYear(CRUDBase[PromotionYear, PromotionYearCreate, PromotionYearBase]):
     def create_promotion_years_for_promotion(
         self, db: Session, *, promotion_id: str
     ) -> List[PromotionYear]:
-        """Create all years for a promotion based on its speciality duration"""
-        # Get the promotion with its speciality
-        promotion = db.query(Promotion).filter(Promotion.id == promotion_id).first()
+        # Get promotion and its speciality
+        promotion = db.query(Promotion).filter(
+            Promotion.id == promotion_id).first()
         if not promotion:
-            raise HTTPException(status_code=404, detail="Promotion non trouvée")
-        
-        # Get duration from speciality or default to 3 years
-        duration = 3  # default
-        if promotion.speciality:
-            duration = promotion.speciality.duree_annees
-        
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Promotion non trouvée"
+            )
+
+        speciality = db.query(Speciality).filter(
+            Speciality.id == promotion.speciality_id).first()
+        if not speciality:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Spécialité non trouvée"
+            )
+
+        # Delete existing promotion years for this promotion
+        db.query(PromotionYear).filter(
+            PromotionYear.promotion_id == promotion_id).delete()
+
+        # Create promotion years based on speciality duration
         promotion_years = []
-        for year_level in range(1, duration + 1):
-            calendar_year = promotion.annee + (year_level - 1)
-            
-            promotion_year = PromotionYear(
+        for annee in range(1, speciality.duree_annees + 1):
+            # Calculate calendar year (promotion start year + current year level - 1)
+            annee_calendaire = promotion.annee + annee - 1
+
+            db_promotion_year = PromotionYear(
                 id=str(uuid.uuid4()),
                 promotion_id=promotion_id,
-                annee_niveau=year_level,
-                annee_calendaire=calendar_year,
-                nom=f"{year_level}{'ère' if year_level == 1 else 'ème'} année",
-                is_active=(year_level == 1)  # Only first year is active initially
+                annee_niveau=annee,
+                annee_calendaire=annee_calendaire,
+                nom=f"Année {annee}"
             )
-            db.add(promotion_year)
-            promotion_years.append(promotion_year)
-        
-        db.commit()
-        return promotion_years
-    
-    def get_by_promotion_id(self, db: Session, *, promotion_id: str) -> List[PromotionYear]:
-        """Get all years for a specific promotion"""
-        return db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promotion_id
-        ).order_by(PromotionYear.annee_niveau).all()
-    
-    def get_active_year(self, db: Session, *, promotion_id: str) -> Optional[PromotionYear]:
-        """Get the currently active year for a promotion"""
+            promotion_years.append(db_promotion_year)
+            db.add(db_promotion_year)
+
+        try:
+            db.commit()
+            return promotion_years
+        except Exception as e:
+            handle_unique_constraint(e, "Les années de promotion")
+
+    def get_by_promotion_and_year(
+        self, db: Session, *, promotion_id: str, annee_niveau: int
+    ) -> Optional[PromotionYear]:
         return db.query(PromotionYear).filter(
             PromotionYear.promotion_id == promotion_id,
-            PromotionYear.is_active == True
-        ).first()
-    
-    def activate_year(self, db: Session, *, promotion_year_id: str) -> PromotionYear:
-        """Activate a specific year and deactivate others in the same promotion"""
-        promotion_year = self.get(db=db, id=promotion_year_id)
-        if not promotion_year:
-            raise HTTPException(status_code=404, detail="Année de promotion non trouvée")
-        
-        # Deactivate all years in the same promotion
-        db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promotion_year.promotion_id
-        ).update({"is_active": False})
-        
-        # Activate the selected year
-        promotion_year.is_active = True
-        db.commit()
-        db.refresh(promotion_year)
-        
-        return promotion_year
-    
-    def get_by_year_level(self, db: Session, *, promotion_id: str, year_level: int) -> Optional[PromotionYear]:
-        """Get a specific year level for a promotion"""
-        return db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promotion_id,
-            PromotionYear.annee_niveau == year_level
+            PromotionYear.annee_niveau == annee_niveau
         ).first()
 
-promotion_year = CRUDPromotionYear(PromotionYear) 
- 
- 
+    def create_with_validation(
+        self, db: Session, *, obj_in: PromotionYearCreate
+    ) -> PromotionYear:
+        # Validate promotion exists
+        promotion = db.query(Promotion).filter(
+            Promotion.id == obj_in.promotion_id).first()
+        if not promotion:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Promotion non trouvée"
+            )
+
+        # Validate year level
+        if obj_in.annee_niveau < 1 or obj_in.annee_niveau > 10:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="L'année niveau doit être entre 1 et 10"
+            )
+
+        # Validate name
+        if obj_in.nom:
+            validate_string_length(obj_in.nom, "nom de l'année", 2, 100)
+
+        # Check for duplicate year in same promotion
+        existing_year = db.query(PromotionYear).filter(
+            PromotionYear.promotion_id == obj_in.promotion_id,
+            PromotionYear.annee_niveau == obj_in.annee_niveau
+        ).first()
+
+        if existing_year:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Une année avec ce numéro existe déjà dans cette promotion"
+            )
+
+        db_promotion_year = PromotionYear(
+            id=str(uuid.uuid4()),
+            promotion_id=obj_in.promotion_id,
+            annee_niveau=obj_in.annee_niveau,
+            annee_calendaire=obj_in.annee_calendaire,
+            nom=obj_in.nom
+        )
+
+        try:
+            db.add(db_promotion_year)
+            db.commit()
+            db.refresh(db_promotion_year)
+            return db_promotion_year
+        except Exception as e:
+            handle_unique_constraint(e, "L'année de promotion")
+
+
+promotion_year = CRUDPromotionYear(PromotionYear)

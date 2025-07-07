@@ -18,7 +18,8 @@ depends_on = None
 
 def upgrade() -> None:
     # Drop the old foreign key constraint
-    op.drop_constraint('rotations_planning_id_fkey', 'rotations', type_='foreignkey')
+    op.drop_constraint('rotations_planning_id_fkey',
+                       'rotations', type_='foreignkey')
     # Add a new one with ON DELETE CASCADE
     op.create_foreign_key(
         'rotations_planning_id_fkey',
@@ -29,19 +30,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint('rotations_planning_id_fkey', 'rotations', type_='foreignkey')
-    op.create_foreign_key(
-        'rotations_planning_id_fkey',
-        'rotations', 'plannings',
-        ['planning_id'], ['id']
-        # No cascade on downgrade
-    )
-
-    # ### end Alembic commands ### 
-
-
-def downgrade() -> None:
-    op.drop_constraint('rotations_planning_id_fkey', 'rotations', type_='foreignkey')
+    op.drop_constraint('rotations_planning_id_fkey',
+                       'rotations', type_='foreignkey')
     op.create_foreign_key(
         'rotations_planning_id_fkey',
         'rotations', 'plannings',
