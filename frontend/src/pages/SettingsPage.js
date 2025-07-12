@@ -65,6 +65,7 @@ const SettingsPage = () => {
     nom: "",
     places_disponibles: 1,
     duree_stage_jours: 14,
+    speciality_id: "",
   });
 
   const { message, type, showMessage, loading, setLoading } = useMessage();
@@ -167,7 +168,12 @@ const SettingsPage = () => {
       }
       setServiceModalOpen(false);
       setEditingService(null);
-      setServiceForm({ nom: "", places_disponibles: 1, duree_stage_jours: 14 });
+      setServiceForm({
+        nom: "",
+        places_disponibles: 1,
+        duree_stage_jours: 14,
+        speciality_id: "",
+      });
       loadData();
     } catch (error) {
       showMessage("Erreur lors de la sauvegarde", "error");
@@ -182,6 +188,7 @@ const SettingsPage = () => {
       nom: service.nom,
       places_disponibles: service.places_disponibles,
       duree_stage_jours: service.duree_stage_jours,
+      speciality_id: service.speciality_id,
     });
     setServiceModalOpen(true);
   };
@@ -463,6 +470,7 @@ const SettingsPage = () => {
                       nom: "",
                       places_disponibles: 1,
                       duree_stage_jours: 14,
+                      speciality_id: "",
                     });
                     setServiceModalOpen(true);
                   }}
@@ -488,6 +496,7 @@ const SettingsPage = () => {
                       nom: "",
                       places_disponibles: 1,
                       duree_stage_jours: 14,
+                      speciality_id: "",
                     });
                     setServiceModalOpen(true);
                   }}
@@ -741,6 +750,27 @@ const SettingsPage = () => {
               }
               min="1"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Spécialité</label>
+            <select
+              value={serviceForm.speciality_id}
+              onChange={(e) =>
+                setServiceForm({
+                  ...serviceForm,
+                  speciality_id: e.target.value,
+                })
+              }
+              className="w-full px-3 py-2 border border-input rounded-md"
+            >
+              <option value="">Sélectionner une spécialité</option>
+              {specialities.map((speciality) => (
+                <option key={speciality.id} value={speciality.id}>
+                  {speciality.nom}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="flex space-x-2 pt-4">

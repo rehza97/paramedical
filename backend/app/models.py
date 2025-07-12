@@ -144,11 +144,15 @@ class Rotation(Base):
     ordre = Column(Integer, nullable=False)
     planning_id = Column(String(36), ForeignKey(
         "plannings.id"), nullable=False)
+    promotion_year_id = Column(String(36), ForeignKey(
+        "promotion_years.id"), nullable=False)  # NEW
 
     # Relationships
     etudiant = relationship("Etudiant", back_populates="rotations")
     service = relationship("Service", back_populates="rotations")
     planning = relationship("Planning", back_populates="rotations")
+    # Optionally, add:
+    # promotion_year = relationship("PromotionYear")
 
 
 class Planning(Base):

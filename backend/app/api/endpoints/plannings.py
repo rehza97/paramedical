@@ -28,41 +28,79 @@ router = APIRouter()
 def generate_planning(
     promo_id: str,
     date_debut: str = "2025-01-01",
+    all_years_mode: bool = False,  # NEW: allow frontend to pass this as a query param
     db: Session = Depends(get_db)
 ):
     """Generate planning for a promotion"""
-    db_planning = planning.generate_planning(
-        db=db, promo_id=promo_id, date_debut=date_debut
+    db_planning, number_of_services, number_of_students = planning.generate_planning(
+        db=db, promo_id=promo_id, date_debut=date_debut, all_years_mode=all_years_mode
     )
 
-    # Convert to response format
-    planning_dict = {
-        "id": db_planning.id,
-        "promo_id": db_planning.promo_id,
-        "date_creation": db_planning.date_creation,
-        "promo_nom": db_planning.promotion.nom,
-        "rotations": []
-    }
-
-    # Add rotation details with student and service names
-    for rotation in db_planning.rotations:
-        rotation_dict = {
-            "id": rotation.id,
-            "etudiant_id": rotation.etudiant_id,
-            "service_id": rotation.service_id,
-            "date_debut": rotation.date_debut,
-            "date_fin": rotation.date_fin,
-            "ordre": rotation.ordre,
-            "planning_id": rotation.planning_id,
-            "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
-            "service_nom": rotation.service.nom
+    if all_years_mode:
+        # db_planning is a list of plannings, one per year
+        plannings_list = []
+        for plan in db_planning:
+            planning_dict = {
+                "id": plan.id,
+                "promo_id": plan.promo_id,
+                "promotion_year_id": plan.promotion_year_id,
+                "annee_niveau": plan.annee_niveau,
+                "date_creation": plan.date_creation,
+                "promo_nom": plan.promotion.nom,
+                "rotations": []
+            }
+            for rotation in plan.rotations:
+                rotation_dict = {
+                    "id": rotation.id,
+                    "etudiant_id": rotation.etudiant_id,
+                    "service_id": rotation.service_id,
+                    "date_debut": rotation.date_debut,
+                    "date_fin": rotation.date_fin,
+                    "ordre": rotation.ordre,
+                    "planning_id": rotation.planning_id,
+                    "promotion_year_id": rotation.promotion_year_id,
+                    "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
+                    "service_nom": rotation.service.nom
+                }
+                planning_dict["rotations"].append(rotation_dict)
+            plannings_list.append(planning_dict)
+        return {
+            "message": "Planning généré avec succès",
+            "plannings": plannings_list,
+            "number_of_services": number_of_services,
+            "number_of_students": number_of_students
         }
-        planning_dict["rotations"].append(rotation_dict)
-
-    return {
-        "message": "Planning généré avec succès",
-        "planning": planning_dict
-    }
+    else:
+        # Single planning (default behavior)
+        planning_dict = {
+            "id": db_planning.id,
+            "promo_id": db_planning.promo_id,
+            "promotion_year_id": db_planning.promotion_year_id,
+            "annee_niveau": db_planning.annee_niveau,
+            "date_creation": db_planning.date_creation,
+            "promo_nom": db_planning.promotion.nom,
+            "rotations": []
+        }
+        for rotation in db_planning.rotations:
+            rotation_dict = {
+                "id": rotation.id,
+                "etudiant_id": rotation.etudiant_id,
+                "service_id": rotation.service_id,
+                "date_debut": rotation.date_debut,
+                "date_fin": rotation.date_fin,
+                "ordre": rotation.ordre,
+                "planning_id": rotation.planning_id,
+                "promotion_year_id": rotation.promotion_year_id,
+                "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
+                "service_nom": rotation.service.nom
+            }
+            planning_dict["rotations"].append(rotation_dict)
+        return {
+            "message": "Planning généré avec succès",
+            "planning": planning_dict,
+            "number_of_services": number_of_services,
+            "number_of_students": number_of_students
+        }
 
 
 @router.get("/{promo_id}", response_model=Planning)

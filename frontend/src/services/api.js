@@ -43,8 +43,10 @@ export const updateSpeciality = (id, data) =>
 export const deleteSpeciality = (id) => api.delete(`/specialities/${id}`);
 
 // ===== PLANNINGS =====
-export const generatePlanning = (promoId, date_debut) =>
-  api.post(`/plannings/generer/${promoId}?date_debut=${date_debut}`);
+export const generatePlanning = (promoId, date_debut, all_years_mode = false) =>
+  api.post(
+    `/plannings/generer/${promoId}?date_debut=${date_debut}&all_years_mode=${all_years_mode}`
+  );
 export const getPlanning = (promoId) => api.get(`/plannings/${promoId}`);
 export const getStudentPlanning = (promoId, etudiantId) =>
   api.get(`/plannings/etudiant/${promoId}/${etudiantId}`);

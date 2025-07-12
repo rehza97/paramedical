@@ -226,7 +226,10 @@ class IdResponse(BaseModel):
 
 class PlanningResponse(BaseModel):
     message: str
-    planning: Planning
+    planning: Optional[Planning] = None
+    plannings: Optional[List[Planning]] = None
+    number_of_services: int
+    number_of_students: int
 
 
 class StudentPlanningResponse(BaseModel):

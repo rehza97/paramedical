@@ -244,5 +244,130 @@ class CRUDRotation(CRUDBase[Rotation, RotationCreate, RotationBase]):
                 detail=f"Erreur lors de la réorganisation: {str(e)}"
             )
 
+    def validate_all_assignments(
+        self, db: Session, *, planning_id: str
+    ) -> Dict[str, Any]:
+        """Validate all rotations in a planning and return validation results"""
+        try:
+            # Get all rotations for this planning
+            rotations = self.get_by_planning(db, planning_id=planning_id)
+
+            errors = []
+            warnings = []
+
+            # Check for overlapping rotations per student
+            student_rotations = {}
+            for rotation in rotations:
+                if rotation.etudiant_id not in student_rotations:
+                    student_rotations[rotation.etudiant_id] = []
+                student_rotations[rotation.etudiant_id].append(rotation)
+
+            # Validate each student's rotations
+            for etudiant_id, student_rots in student_rotations.items():
+                # Sort by start date
+                student_rots.sort(key=lambda x: x.date_debut)
+
+                # Check for overlaps
+                for i in range(len(student_rots) - 1):
+                    current = student_rots[i]
+                    next_rotation = student_rots[i + 1]
+
+                    # Check if there's a gap between rotations
+                    current_end = datetime.strptime(
+                        current.date_fin, "%Y-%m-%d").date()
+                    next_start = datetime.strptime(
+                        next_rotation.date_debut, "%Y-%m-%d").date()
+
+                    if next_start > current_end + timedelta(days=1):
+                        warnings.append(
+                            f"Gap detected for student {current.etudiant.prenom} {current.etudiant.nom}: "
+                            f"{current_end} to {next_start}"
+                        )
+
+                    # Check for overlaps
+                    if current_end >= next_start:
+                        errors.append(
+                            f"Overlapping rotations for student {current.etudiant.prenom} {current.etudiant.nom}: "
+                            f"{current.date_debut} to {current.date_fin} overlaps with "
+                            f"{next_rotation.date_debut} to {next_rotation.date_fin}"
+                        )
+
+            # Check service capacity violations
+            service_rotations = {}
+            for rotation in rotations:
+                if rotation.service_id not in service_rotations:
+                    service_rotations[rotation.service_id] = []
+                service_rotations[rotation.service_id].append(rotation)
+
+            for service_id, service_rots in service_rotations.items():
+                service = db.query(Service).filter(
+                    Service.id == service_id).first()
+                if not service:
+                    continue
+
+                # Check capacity for each day
+                for rotation in service_rots:
+                    start_date = datetime.strptime(
+                        rotation.date_debut, "%Y-%m-%d").date()
+                    end_date = datetime.strptime(
+                        rotation.date_fin, "%Y-%m-%d").date()
+
+                    # Count overlapping rotations for this service
+                    overlapping_count = db.query(Rotation).filter(
+                        Rotation.service_id == service_id,
+                        Rotation.date_debut <= rotation.date_fin,
+                        Rotation.date_fin >= rotation.date_debut
+                    ).count()
+
+                    if overlapping_count > service.places_disponibles:
+                        errors.append(
+                            f"Service {service.nom} capacity exceeded: "
+                            f"{overlapping_count} students assigned, capacity is {service.places_disponibles}"
+                        )
+                        break
+
+            # Check for students with no rotations
+            planning = db.query(Planning).filter(
+                Planning.id == planning_id).first()
+            if planning and planning.promotion:
+                all_students = db.query(Etudiant).filter(
+                    Etudiant.promotion_id == planning.promo_id,
+                    Etudiant.is_active == True
+                ).all()
+
+                students_with_rotations = set(
+                    rotation.etudiant_id for rotation in rotations)
+                students_without_rotations = [
+                    student for student in all_students
+                    if student.id not in students_with_rotations
+                ]
+
+                if students_without_rotations:
+                    warnings.append(
+                        f"{len(students_without_rotations)} students have no rotations assigned"
+                    )
+
+            is_valid = len(errors) == 0
+
+            return {
+                "is_valid": is_valid,
+                "erreurs": errors,
+                "warnings": warnings,
+                "total_rotations": len(rotations),
+                "total_students": len(student_rotations),
+                "total_services": len(service_rotations)
+            }
+
+        except Exception as e:
+            logger.error(f"Error validating planning {planning_id}: {str(e)}")
+            return {
+                "is_valid": False,
+                "erreurs": [f"Error during validation: {str(e)}"],
+                "warnings": [],
+                "total_rotations": 0,
+                "total_students": 0,
+                "total_services": 0
+            }
+
 
 rotation = CRUDRotation(Rotation)

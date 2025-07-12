@@ -53,6 +53,11 @@ const PlanningPage = () => {
   const [allStudents, setAllStudents] = useState([]);
   const [validationResult, setValidationResult] = useState(null);
   const [validationLoading, setValidationLoading] = useState(false);
+  const [allYearsMode, setAllYearsMode] = useState(false); // NEW: toggle for all years mode
+  const [numberOfServices, setNumberOfServices] = useState(0); // NEW: service count
+  const [numberOfStudents, setNumberOfStudents] = useState(0); // NEW: student count
+  const [selectedTabYearId, setSelectedTabYearId] = useState(""); // NEW: year tab state
+  const [allPlannings, setAllPlannings] = useState([]); // NEW: store all plannings for year switching
 
   useEffect(() => {
     const fetchPromos = async () => {
@@ -150,6 +155,44 @@ const PlanningPage = () => {
     fetchValidation();
   }, [planning]);
 
+  // Set default selectedTabYearId when promotionYears change
+  useEffect(() => {
+    if (promotionYears && promotionYears.length > 0) {
+      const active = promotionYears.find((y) => y.is_active);
+      setSelectedTabYearId(active ? active.id : promotionYears[0].id);
+    }
+  }, [promotionYears]);
+
+  // Filtered rotations (no year filtering, just search)
+  const filteredRotations =
+    planning?.rotations?.filter(
+      (rotation) =>
+        rotation.etudiant_nom
+          ?.toLowerCase()
+          .includes(searchTerm.toLowerCase()) ||
+        rotation.service_nom?.toLowerCase().includes(searchTerm.toLowerCase())
+    ) || [];
+
+  // Filtered students (no year filtering, just search)
+  const filteredStudents =
+    studentSchedules?.filter(
+      (schedule) =>
+        schedule.etudiant_nom
+          ?.toLowerCase()
+          .includes(searchTerm.toLowerCase()) ||
+        schedule.etudiant_prenom
+          ?.toLowerCase()
+          .includes(searchTerm.toLowerCase())
+    ) || [];
+
+  // Debug logs (moved after variable definitions)
+  console.log("promotionYears:", promotionYears);
+  console.log("selectedTabYearId:", selectedTabYearId);
+  console.log("planning:", planning);
+  console.log("studentSchedules:", studentSchedules);
+  console.log("filteredRotations:", filteredRotations);
+  console.log("filteredStudents:", filteredStudents);
+
   const selectedPromo = promotions.find((p) => p.id === selectedPromoId);
   const selectedYear = promotionYears.find((y) => y.id === selectedYearId);
 
@@ -161,15 +204,36 @@ const PlanningPage = () => {
 
     try {
       setLoading(true);
-      await generatePlanning(selectedPromoId, "2025-01-01");
+      // Pass allYearsMode to the API
+      const { data } = await generatePlanning(
+        selectedPromoId,
+        "2025-01-01",
+        allYearsMode
+      );
       showMessage("Planning généré avec succès");
+      // Save service and student counts from backend
+      setNumberOfServices(data.number_of_services || 0);
+      setNumberOfStudents(data.number_of_students || 0);
 
-      // Load the planning first
-      await handleLoadPlanning();
+      // Handle the new response structure
+      if (allYearsMode && data.plannings) {
+        // Multiple plannings returned - use the first one or the one matching selected year
+        const plannings = data.plannings;
+        if (plannings.length > 0) {
+          // Find planning for the selected year tab, or use the first one
+          const selectedPlanning =
+            plannings.find((p) => p.promotion_year_id === selectedTabYearId) ||
+            plannings[0];
+          setPlanning(selectedPlanning);
+          setAllPlannings(plannings); // Store all plannings
+        }
+      } else {
+        // Single planning returned (legacy behavior)
+        setPlanning(data.planning);
+      }
 
       // Then automatically load student schedules for better UX
       await handleLoadStudentSchedules();
-
       showMessage(
         "Planning et plannings individuels chargés avec succès",
         "success"
@@ -324,7 +388,7 @@ const PlanningPage = () => {
             className="w-full px-2 py-1 border rounded text-sm"
           >
             <option value="">Sélectionner un étudiant</option>
-            {allStudents.map((student) => (
+            {allStudents?.map((student) => (
               <option key={student.id} value={student.id}>
                 {student.prenom} {student.nom}
               </option>
@@ -342,7 +406,7 @@ const PlanningPage = () => {
             className="w-full px-2 py-1 border rounded text-sm"
           >
             <option value="">Sélectionner un service</option>
-            {allServices.map((service) => (
+            {allServices?.map((service) => (
               <option key={service.id} value={service.id}>
                 {service.nom}
               </option>
@@ -388,21 +452,6 @@ const PlanningPage = () => {
     );
   };
 
-  const filteredRotations =
-    planning?.rotations?.filter(
-      (rotation) =>
-        rotation.etudiant_nom
-          .toLowerCase()
-          .includes(searchTerm.toLowerCase()) ||
-        rotation.service_nom.toLowerCase().includes(searchTerm.toLowerCase())
-    ) || [];
-
-  const filteredStudents = studentSchedules.filter(
-    (schedule) =>
-      schedule.etudiant_nom.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      schedule.etudiant_prenom.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
   const ViewTabs = () => (
     <div className="flex space-x-1 bg-muted p-1 rounded-lg">
       <Button
@@ -428,6 +477,48 @@ const PlanningPage = () => {
       </Button>
     </div>
   );
+
+  // Year Tabs component
+  const YearTabs = () => {
+    if (!allYearsMode || !promotionYears || promotionYears.length === 0) {
+      return null;
+    }
+
+    return (
+      <div className="flex space-x-2 mb-4">
+        {promotionYears?.map((year) => (
+          <button
+            key={year.id}
+            className={`px-4 py-2 rounded ${
+              selectedTabYearId === year.id
+                ? "bg-blue-600 text-white"
+                : "bg-gray-200"
+            }`}
+            onClick={() => {
+              setSelectedTabYearId(year.id);
+              if (allYearsMode && allPlannings.length > 0) {
+                const selectedPlanning = allPlannings.find(
+                  (p) => p.promotion_year_id === year.id
+                );
+                if (selectedPlanning) {
+                  setPlanning(selectedPlanning);
+                } else {
+                  // Fallback to default if no planning found for this year
+                  setPlanning(null);
+                  showMessage(
+                    `Aucun planning trouvé pour l'année ${year.nom}. Générez-en un d'abord.`,
+                    "warning"
+                  );
+                }
+              }
+            }}
+          >
+            {year.nom}
+          </button>
+        ))}
+      </div>
+    );
+  };
 
   // Handle export to Excel
   const handleExportExcel = async () => {
@@ -497,20 +588,19 @@ const PlanningPage = () => {
           {validationLoading ? (
             <p>Vérification des anomalies...</p>
           ) : validationResult &&
-            (validationResult.erreurs.length > 0 ||
-              validationResult.warnings.length > 0) ? (
+            (validationResult.erreurs?.length > 0 ||
+              validationResult.warnings?.length > 0) ? (
             <ul className="space-y-1">
-              {validationResult.erreurs.map((err, idx) => (
+              {validationResult.erreurs?.map((err, idx) => (
                 <li key={"err-" + idx} className="text-red-600">
                   ❌ {err}
                 </li>
               ))}
-              {validationResult.warnings &&
-                validationResult.warnings.map((warn, idx) => (
-                  <li key={"warn-" + idx} className="text-yellow-600">
-                    ⚠️ {warn}
-                  </li>
-                ))}
+              {validationResult.warnings?.map((warn, idx) => (
+                <li key={"warn-" + idx} className="text-yellow-600">
+                  ⚠️ {warn}
+                </li>
+              ))}
             </ul>
           ) : validationResult ? (
             <p className="text-green-600">
@@ -552,7 +642,7 @@ const PlanningPage = () => {
                     ? "Chargement..."
                     : "Sélectionner une promotion"}
                 </option>
-                {promotions.map((promo) => (
+                {promotions?.map((promo) => (
                   <option key={promo.id} value={promo.id}>
                     {promo.nom} ({promo.annee}
                     {promo.speciality ? `, ${promo.speciality.nom}` : ""})
@@ -568,14 +658,14 @@ const PlanningPage = () => {
                   value={selectedYearId}
                   onChange={(e) => setSelectedYearId(e.target.value)}
                   className="w-full px-3 py-2 border border-input rounded-md"
-                  disabled={promotionYears.length === 0}
+                  disabled={!promotionYears || promotionYears.length === 0}
                 >
                   <option value="">
-                    {promotionYears.length === 0
+                    {!promotionYears || promotionYears.length === 0
                       ? "Chargement..."
                       : "Sélectionner une année"}
                   </option>
-                  {promotionYears.map((year) => (
+                  {promotionYears?.map((year) => (
                     <option key={year.id} value={year.id}>
                       {year.nom} ({year.annee_calendaire})
                       {year.is_active ? " - Active" : ""}
@@ -606,6 +696,19 @@ const PlanningPage = () => {
                 </Button>
               </div>
             </div>
+          </div>
+          {/* NEW: Toggle for all years mode */}
+          <div className="mt-4 flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="allYearsMode"
+              checked={allYearsMode}
+              onChange={() => setAllYearsMode((v) => !v)}
+              className="form-checkbox h-4 w-4 text-blue-600"
+            />
+            <label htmlFor="allYearsMode" className="text-sm">
+              Planifier pour toutes les années (active et inactives)
+            </label>
           </div>
         </CardContent>
       </Card>
@@ -651,6 +754,21 @@ const PlanningPage = () => {
                 </div>
               )}
             </div>
+            {/* NEW: Service and student counts */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+              <div>
+                <span className="text-sm font-medium text-muted-foreground">
+                  Services sélectionnés
+                </span>
+                <p className="text-lg font-semibold">{numberOfServices}</p>
+              </div>
+              <div>
+                <span className="text-sm font-medium text-muted-foreground">
+                  Étudiants dans la promotion
+                </span>
+                <p className="text-lg font-semibold">{numberOfStudents}</p>
+              </div>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -658,6 +776,22 @@ const PlanningPage = () => {
       {/* Content based on selected view */}
       {selectedView === "overview" && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {allYearsMode && (
+            <div className="col-span-full">
+              <Card className="border-blue-200 bg-blue-50">
+                <CardContent className="pt-6">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
+                    <p className="text-sm text-blue-800">
+                      Mode multi-années activé : Le planning sera généré pour
+                      toutes les années de la promotion. Utilisez les onglets
+                      d'année pour naviguer entre les différents plannings.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">
@@ -748,6 +882,7 @@ const PlanningPage = () => {
             </div>
           </CardHeader>
           <CardContent>
+            <YearTabs /> {/* NEW: year tabs above table */}
             {planningLoading ? (
               <div className="text-center text-muted-foreground py-8">
                 <Clock className="h-8 w-8 mx-auto mb-2 animate-spin" />
@@ -857,35 +992,33 @@ const PlanningPage = () => {
             </div>
           </CardHeader>
           <CardContent>
+            <YearTabs /> {/* NEW: year tabs above students */}
             {planningLoading ? (
               <div className="text-center text-muted-foreground py-8">
                 <Clock className="h-8 w-8 mx-auto mb-2 animate-spin" />
                 Chargement des plannings étudiants...
               </div>
             ) : filteredStudents.length > 0 ? (
-              <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredStudents.map((schedule, index) => {
                   // Calculate student statistics from rotations
                   const studentRotations =
                     planning?.rotations?.filter(
-                      (rotation) =>
-                        rotation.etudiant_nom === schedule.etudiant_nom
+                      (r) => r.etudiant_id === schedule.etudiant_id
                     ) || [];
 
-                  const totalServices = studentRotations.length;
-                  const totalDuration = studentRotations.reduce(
-                    (sum, rotation) => {
+                  const totalServices = studentRotations?.length || 0;
+                  const totalDuration =
+                    studentRotations?.reduce((sum, rotation) => {
                       const start = new Date(rotation.date_debut);
                       const end = new Date(rotation.date_fin);
                       return (
                         sum + Math.ceil((end - start) / (1000 * 60 * 60 * 24))
                       );
-                    },
-                    0
-                  );
+                    }, 0) || 0;
 
                   // Calculate breaks between rotations
-                  const sortedRotations = [...studentRotations].sort(
+                  const sortedRotations = [...(studentRotations || [])].sort(
                     (a, b) => new Date(a.date_debut) - new Date(b.date_debut)
                   );
 
@@ -981,7 +1114,7 @@ const PlanningPage = () => {
                         </div>
 
                         {/* Detailed Schedule */}
-                        {studentRotations.length > 0 && (
+                        {studentRotations?.length > 0 && (
                           <div className="space-y-2">
                             <h4 className="font-medium text-sm text-muted-foreground mb-2">
                               Planning détaillé avec chronologie des rotations:
@@ -1048,7 +1181,7 @@ const PlanningPage = () => {
                           </div>
                         )}
 
-                        {studentRotations.length === 0 && (
+                        {studentRotations?.length === 0 && (
                           <div className="text-center text-muted-foreground py-4">
                             <Calendar className="h-6 w-6 mx-auto mb-2" />
                             Aucune rotation planifiée

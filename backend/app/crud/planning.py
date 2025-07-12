@@ -23,12 +23,13 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
         return db.query(Planning).filter(Planning.promo_id == promo_id).first()
 
     def generate_planning(
-        self, db: Session, *, promo_id: str, date_debut: str = None
-    ) -> Planning:
+        self, db: Session, *, promo_id: str, date_debut: str = None, all_years_mode: bool = False
+    ) -> tuple[Planning, int, int]:
         """Generate optimized planning for a promotion using planning settings"""
         logger.debug(
             f"🚀 Starting planning generation for promotion: {promo_id}")
         logger.debug(f"📅 Date debut: {date_debut}")
+        logger.debug(f"🟢 all_years_mode: {all_years_mode}")
 
         # Get planning settings
         try:
@@ -85,13 +86,65 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
                 detail=f"Error loading students: {str(e)}"
             )
 
-        # Get active promotion year and its services
-        try:
+        if all_years_mode:
+            # ALL YEARS MODE: Generate planning for all years of the speciality
+            logger.debug(
+                f"🔄 ALL YEARS MODE: Generating planning for all years")
+            promotion_years = db.query(PromotionYear).filter(
+                PromotionYear.promotion_id == promo_id
+            ).order_by(PromotionYear.annee_niveau).all()
+            if not promotion_years:
+                logger.error(
+                    f"❌ No promotion years found for promotion: {promo_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucune année de promotion trouvée"
+                )
+            logger.debug(f"✅ Found {len(promotion_years)} promotion years:")
+            for year in promotion_years:
+                logger.debug(
+                    f"   - Year {year.annee_niveau}: {year.nom or 'Unnamed'}")
+            created_plannings = []
+            total_services = 0
+            for promotion_year in promotion_years:
+                year_services = promotion_year.services
+                # Only students in this year
+                year_students = [e for e in etudiants if getattr(
+                    e, 'annee_courante', 1) == promotion_year.annee_niveau]
+                if not year_services:
+                    logger.warning(
+                        f"⚠️ No services configured for year {promotion_year.annee_niveau}")
+                    continue
+                if not year_students:
+                    logger.warning(
+                        f"⚠️ No students found for year {promotion_year.annee_niveau}")
+                    continue
+                logger.debug(
+                    f"✅ Found {len(year_services)} services and {len(year_students)} students for year {promotion_year.annee_niveau}")
+                year_planning = self._generate_planning_for_year(
+                    db, promotion, promotion_year, year_students, year_services,
+                    settings, date_debut, logger
+                )
+                created_plannings.append(year_planning)
+                total_services += len(year_services)
+            # Return the first planning (or the active year planning if available)
+            active_planning = next((p for p in created_plannings if p.promotion_year_id ==
+                                    next((y.id for y in promotion_years if y.is_active), None)),
+                                   created_plannings[0] if created_plannings else None)
+            if not active_planning:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Aucun planning généré"
+                )
+            return created_plannings, total_services, len(etudiants)
+        else:
+            # ACTIVE YEAR ONLY MODE
+            logger.debug(
+                f"🔄 ACTIVE YEAR ONLY MODE: Generating planning for active year only")
             active_year = db.query(PromotionYear).filter(
                 PromotionYear.promotion_id == promo_id,
                 PromotionYear.is_active == True
             ).first()
-
             if not active_year:
                 logger.error(
                     f"❌ No active year found for promotion: {promo_id}")
@@ -100,8 +153,6 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
                     detail="Aucune année active trouvée pour cette promotion"
                 )
             logger.debug(f"✅ Active year found: {active_year.annee_niveau}")
-
-            # Get services assigned to the active year
             services = active_year.services
             if not services:
                 logger.error(
@@ -114,17 +165,16 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
             for service in services:
                 logger.debug(
                     f"   - {service.nom} (duration: {service.duree_stage_jours} days, capacity: {service.places_disponibles})")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"❌ Error loading promotion year/services: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error loading promotion year/services: {str(e)}"
+            planning = self._generate_planning_for_year(
+                db, promotion, active_year, etudiants, services,
+                settings, date_debut, logger
             )
+            return planning, len(services), len(etudiants)
 
+    def _generate_planning_for_year(self, db, promotion, promotion_year, etudiants, services, settings, date_debut, logger):
+        """Helper to generate a single planning for a specific promotion year."""
         # Clear existing planning properly
-        existing_planning = self.get_by_promotion(db, promo_id=promo_id)
+        existing_planning = self.get_by_promotion(db, promo_id=promotion.id)
         if existing_planning:
             # Delete in correct order to avoid foreign key violations:
             # 1. Delete student schedule details first
@@ -158,9 +208,9 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
         # Create new planning
         db_planning = Planning(
             id=str(uuid.uuid4()),
-            promo_id=promo_id,
-            promotion_year_id=active_year.id,
-            annee_niveau=active_year.annee_niveau
+            promo_id=promotion.id,
+            promotion_year_id=promotion_year.id,
+            annee_niveau=promotion_year.annee_niveau
         )
         db.add(db_planning)
         db.flush()
@@ -489,7 +539,8 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
                         date_fin=best_assignment['end_date'].strftime(
                             "%Y-%m-%d"),
                         ordre=best_assignment['order'],
-                        planning_id=db_planning.id
+                        planning_id=db_planning.id,
+                        promotion_year_id=promotion_year.id  # NEW: set the year
                     )
                     rotations.append(rotation)
                     db.add(rotation)

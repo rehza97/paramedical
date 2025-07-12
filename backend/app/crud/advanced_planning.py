@@ -440,7 +440,8 @@ class AdvancedPlanningAlgorithm:
                 date_debut=rotation.date_debut,
                 date_fin=rotation.date_fin,
                 ordre=rotation.ordre,
-                planning_id=db_planning.id
+                planning_id=db_planning.id,
+                promotion_year_id=db_planning.promotion_year_id  # <-- Ensure this is set
             )
             self.db.add(db_rotation)
 
