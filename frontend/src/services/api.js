@@ -45,12 +45,6 @@ export const deleteSpeciality = (id) => api.delete(`/specialities/${id}`);
 // ===== PLANNINGS =====
 export const generatePlanning = (promoId, date_debut) =>
   api.post(`/plannings/generer/${promoId}?date_debut=${date_debut}`);
-export const generateAdvancedPlanning = (promoId, date_debut) =>
-  api.post(`/plannings/generer-avance/${promoId}?date_debut=${date_debut}`);
-export const analyzePlanningEfficiency = (promoId) =>
-  api.post(`/plannings/analyser-efficacite/${promoId}`);
-export const validatePlanning = (promoId) =>
-  api.post(`/plannings/valider/${promoId}`);
 export const getPlanning = (promoId) => api.get(`/plannings/${promoId}`);
 export const getStudentPlanning = (promoId, etudiantId) =>
   api.get(`/plannings/etudiant/${promoId}/${etudiantId}`);
@@ -58,6 +52,12 @@ export const exportPlanningExcel = (promoId) =>
   api.get(`/plannings/${promoId}/export`, { responseType: "blob" });
 export const updateRotation = (rotationId, data) =>
   api.put(`/plannings/rotation/${rotationId}`, data);
+export const getPromotionsForPlanning = (planningId) =>
+  api.get(`/plannings/${planningId}/promotions`);
+export const getPlanningDetails = (planningId) =>
+  api.get(`/plannings/${planningId}/details`);
+export const validatePlanning = (planningId) =>
+  api.get(`/plannings/${planningId}/validate`);
 
 // ===== STUDENT SCHEDULES =====
 export const getStudentSchedule = (etudiantId) =>

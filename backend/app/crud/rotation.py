@@ -1,14 +1,18 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, or_, func, Date
 from fastapi import HTTPException, status
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
+import logging
 
 from .base import CRUDBase
 from ..models import Rotation, Etudiant, Service, Planning
-from ..schemas import RotationCreate, RotationBase
+from ..schemas import RotationCreate, RotationBase, RotationUpdate
 from .utils import validate_string_length, handle_db_commit, handle_unique_constraint, db_commit_context
+
+logger = logging.getLogger(__name__)
 
 
 class CRUDRotation(CRUDBase[Rotation, RotationCreate, RotationBase]):

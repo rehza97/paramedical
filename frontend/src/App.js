@@ -11,6 +11,7 @@ import { Badge } from "./components/ui/badge";
 import DashboardPage from "./pages/DashboardPage";
 import StudentsPage from "./pages/StudentsPage";
 import PlanningPage from "./pages/PlanningPage";
+
 import SettingsPage from "./pages/SettingsPage";
 import ErrorBoundary from "./components/ErrorBoundary";
 import {
@@ -19,6 +20,7 @@ import {
   Calendar,
   Settings,
   GraduationCap,
+  Brain,
 } from "lucide-react";
 
 function Navigation() {
@@ -43,6 +45,7 @@ function Navigation() {
       icon: Calendar,
       description: "Plannings et calendriers des stages",
     },
+
     {
       path: "/settings",
       label: "Configuration",
@@ -111,6 +114,7 @@ function App() {
               <Route path="/" element={<DashboardPage />} />
               <Route path="/students" element={<StudentsPage />} />
               <Route path="/planning" element={<PlanningPage />} />
+
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="*" element={<DashboardPage />} />
             </Routes>

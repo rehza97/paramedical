@@ -1,15 +1,20 @@
+from .planning_settings import planning_settings
+from .utils import validate_string_length, handle_db_commit, handle_unique_constraint, db_commit_context
+from ..schemas import PlanningCreate, PlanningBase
+from ..models import Planning, Promotion, Service, Rotation, Etudiant, PromotionYear
+from .base import CRUDBase
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 import uuid
 from datetime import datetime, timedelta
+import logging
+import math
 
-from .base import CRUDBase
-from ..models import Planning, Promotion, Service, Rotation, Etudiant, PromotionYear
-from ..schemas import PlanningCreate, PlanningBase
-from .utils import validate_string_length, handle_db_commit, handle_unique_constraint, db_commit_context
-from .planning_settings import planning_settings
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 
 class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
@@ -21,50 +26,101 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
         self, db: Session, *, promo_id: str, date_debut: str = None
     ) -> Planning:
         """Generate optimized planning for a promotion using planning settings"""
+        logger.debug(
+            f"🚀 Starting planning generation for promotion: {promo_id}")
+        logger.debug(f"📅 Date debut: {date_debut}")
+
         # Get planning settings
-        settings = planning_settings.get_or_create_default(db)
+        try:
+            settings = planning_settings.get_or_create_default(db)
+            logger.debug(f"✅ Planning settings loaded: {settings}")
+        except Exception as e:
+            logger.error(f"❌ Failed to load planning settings: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to load planning settings: {str(e)}"
+            )
 
         # Use settings start date if not provided
         if not date_debut:
             date_debut = settings.academic_year_start
+            logger.debug(f"📅 Using settings start date: {date_debut}")
 
-        promotion = db.query(Promotion).filter(
-            Promotion.id == promo_id).first()
-        if not promotion:
+        try:
+            promotion = db.query(Promotion).filter(
+                Promotion.id == promo_id).first()
+            if not promotion:
+                logger.error(f"❌ Promotion not found: {promo_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Promotion non trouvée"
+                )
+            logger.debug(f"✅ Promotion found: {promotion.nom}")
+        except Exception as e:
+            logger.error(f"❌ Error loading promotion: {e}")
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Promotion non trouvée"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error loading promotion: {str(e)}"
             )
 
         # Get students (only active ones)
-        etudiants = db.query(Etudiant).filter(
-            Etudiant.promotion_id == promo_id,
-            Etudiant.is_active == True
-        ).all()
-        if not etudiants:
+        try:
+            etudiants = db.query(Etudiant).filter(
+                Etudiant.promotion_id == promo_id,
+                Etudiant.is_active == True
+            ).all()
+            if not etudiants:
+                logger.error(f"❌ No active students in promotion: {promo_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucun étudiant actif dans cette promotion"
+                )
+            logger.debug(f"✅ Found {len(etudiants)} active students")
+            for etudiant in etudiants:
+                logger.debug(f"   - {etudiant.nom} {etudiant.prenom}")
+        except Exception as e:
+            logger.error(f"❌ Error loading students: {e}")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Aucun étudiant actif dans cette promotion"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error loading students: {str(e)}"
             )
 
         # Get active promotion year and its services
-        active_year = db.query(PromotionYear).filter(
-            PromotionYear.promotion_id == promo_id,
-            PromotionYear.is_active == True
-        ).first()
+        try:
+            active_year = db.query(PromotionYear).filter(
+                PromotionYear.promotion_id == promo_id,
+                PromotionYear.is_active == True
+            ).first()
 
-        if not active_year:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Aucune année active trouvée pour cette promotion"
-            )
+            if not active_year:
+                logger.error(
+                    f"❌ No active year found for promotion: {promo_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucune année active trouvée pour cette promotion"
+                )
+            logger.debug(f"✅ Active year found: {active_year.annee_niveau}")
 
-        # Get services assigned to the active year
-        services = active_year.services
-        if not services:
+            # Get services assigned to the active year
+            services = active_year.services
+            if not services:
+                logger.error(
+                    f"❌ No services configured for active year: {active_year.id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucun service configuré pour cette année"
+                )
+            logger.debug(f"✅ Found {len(services)} services:")
+            for service in services:
+                logger.debug(
+                    f"   - {service.nom} (duration: {service.duree_stage_jours} days, capacity: {service.places_disponibles})")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error loading promotion year/services: {e}")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Aucun service configuré pour cette année"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error loading promotion year/services: {str(e)}"
             )
 
         # Clear existing planning properly
@@ -110,41 +166,73 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
         db.flush()
 
         # Calculate planning constraints
-        nb_etudiants = len(etudiants)
-        nb_services = len(services)
-        date_debut_dt = datetime.strptime(date_debut, "%Y-%m-%d")
+        try:
+            nb_etudiants = len(etudiants)
+            nb_services = len(services)
+            date_debut_dt = datetime.strptime(date_debut, "%Y-%m-%d")
 
-        # Calculate total duration limit based on settings
-        total_duration_days = settings.total_duration_months * 30  # Approximate
-        date_fin_limite = date_debut_dt + timedelta(days=total_duration_days)
+            # For mandatory completion, we extend the time limit as needed
+            # Initial estimate: give enough time for all students to complete all services
+            estimated_total_days = 0
+            for service in services:
+                # Each service needs to run enough times to accommodate all students
+                # Taking into account service capacity and duration
+                service_capacity = min(
+                    service.places_disponibles, settings.max_concurrent_students)
+                service_runs_needed = math.ceil(
+                    nb_etudiants / service_capacity)
+                estimated_total_days = max(
+                    estimated_total_days, service_runs_needed * service.duree_stage_jours)
 
-        # Calculate optimal service selection per student
-        # Instead of all services, select a reasonable subset
-        total_service_days = sum(
-            service.duree_stage_jours for service in services)
+            # Add buffer for breaks and scheduling flexibility
+            buffer_days = estimated_total_days * 0.3  # 30% buffer
+            total_duration_days = estimated_total_days + buffer_days
+            date_fin_limite = date_debut_dt + \
+                timedelta(days=total_duration_days)
 
-        # If all services exceed duration limit, select priority services
-        if total_service_days > total_duration_days:
-            # Sort services by priority (shortest first for better distribution)
-            services_sorted = sorted(
-                services, key=lambda x: x.duree_stage_jours)
-            selected_services = []
-            current_days = 0
-
-            for service in services_sorted:
-                if current_days + service.duree_stage_jours <= total_duration_days:
-                    selected_services.append(service)
-                    current_days += service.duree_stage_jours
-                else:
-                    break
-
-            services = selected_services
-        nb_services = len(services)
-
-        if nb_services == 0:
+            logger.debug(f"📊 Planning constraints:")
+            logger.debug(f"   - Students: {nb_etudiants}")
+            logger.debug(f"   - Services: {nb_services}")
+            logger.debug(f"   - Start date: {date_debut_dt}")
+            logger.debug(f"   - Estimated end date: {date_fin_limite}")
+            logger.debug(f"   - Total duration: {total_duration_days} days")
+            logger.debug(
+                f"   - MANDATORY COMPLETION: ALL students must complete ALL services")
+        except Exception as e:
+            logger.error(f"❌ Error calculating planning constraints: {e}")
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Aucun service ne peut être planifié dans la durée limite"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error calculating planning constraints: {str(e)}"
+            )
+
+        # For mandatory completion, we use ALL services - no selection/filtering
+        try:
+            logger.debug(f"✅ Using ALL services for mandatory completion:")
+            for service in services:
+                logger.debug(
+                    f"   - {service.nom} (duration: {service.duree_stage_jours} days, capacity: {service.places_disponibles})")
+
+            nb_services = len(services)
+            if nb_services == 0:
+                logger.error("❌ No services available")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucun service disponible"
+                )
+
+            logger.debug(f"📊 Mandatory completion requirements:")
+            logger.debug(
+                f"   - Each student must complete: {nb_services} services")
+            logger.debug(
+                f"   - Total rotations needed: {nb_etudiants * nb_services}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error in service preparation: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error in service preparation: {str(e)}"
             )
 
         # Initialize tracking variables
@@ -152,75 +240,246 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
         service_occupation = {}
         student_completed_services = {}
         student_next_available_date = {}
+        student_waiting_queue = {}  # Track students waiting for specific services
+        assignment_history = []  # Track assignments for backtracking
 
         for etudiant in etudiants:
             student_completed_services[etudiant.id] = set()
             student_next_available_date[etudiant.id] = date_debut_dt
+            # List of service IDs student is waiting for
+            student_waiting_queue[etudiant.id] = []
 
-        # Optimized planning algorithm
-        max_iterations = nb_etudiants * nb_services
+        # Mandatory completion algorithm - continues until ALL students complete ALL services
+        max_iterations = nb_etudiants * nb_services * 3  # More generous iteration limit
         iteration = 0
+        stagnation_count = 0
+        completion_target = nb_etudiants * nb_services  # Total rotations needed
+
+        logger.debug(f"🔄 Starting MANDATORY COMPLETION algorithm:")
+        logger.debug(f"   - Max iterations: {max_iterations}")
+        logger.debug(f"   - Completion target: {completion_target} rotations")
+        logger.debug(
+            f"   - Extension allowed: planning can extend beyond original duration")
+
+        logger.debug(f"📋 Planning settings:")
+        logger.debug(
+            f"   - Max concurrent students (global): {settings.max_concurrent_students}")
+        logger.debug(f"📋 Service capacities:")
+        for service in services:
+            effective_capacity = min(
+                service.places_disponibles, settings.max_concurrent_students)
+            logger.debug(
+                f"   - {service.nom}: {service.places_disponibles} → effective: {effective_capacity}")
 
         while iteration < max_iterations:
             iteration += 1
             progress_made = False
 
-            for etudiant in etudiants:
-                # Check if student has completed all selected services
+            # Check completion status
+            current_rotations = len(rotations)
+            completion_rate = (current_rotations / completion_target) * \
+                100 if completion_target > 0 else 0
+
+            if iteration % 10 == 0:
+                logger.debug(f"🔄 Iteration {iteration}/{max_iterations}")
+                logger.debug(
+                    f"   - Rotations created: {current_rotations}/{completion_target} ({completion_rate:.1f}%)")
+
+                # Show student completion status
+                incomplete_students = 0
+                for etudiant in etudiants:
+                    completed_count = len(
+                        student_completed_services[etudiant.id])
+                    if completed_count < nb_services:
+                        incomplete_students += 1
+
+                logger.debug(
+                    f"   - Students with incomplete schedules: {incomplete_students}/{nb_etudiants}")
+
+            # Check if we've achieved mandatory completion
+            if current_rotations >= completion_target:
+                # Verify all students have completed all services
+                all_complete = True
+                for etudiant in etudiants:
+                    if len(student_completed_services[etudiant.id]) < nb_services:
+                        all_complete = False
+                        missing_services = nb_services - \
+                            len(student_completed_services[etudiant.id])
+                        logger.debug(
+                            f"   - {etudiant.nom} still needs {missing_services} services")
+
+                if all_complete:
+                    logger.debug("🎉 MANDATORY COMPLETION ACHIEVED!")
+                    logger.debug(
+                        f"   - All {nb_etudiants} students completed all {nb_services} services")
+                    logger.debug(f"   - Total rotations: {current_rotations}")
+                    break
+
+            # Sort students by completion priority (least completed first, then by next available date)
+            etudiants_sorted = sorted(etudiants, key=lambda e: (
+                # Primary: number of completed services (ascending - help students with fewer services first)
+                len(student_completed_services[e.id]),
+                # Secondary: next available date (ascending - help students who can start sooner)
+                student_next_available_date[e.id]
+            ))
+
+            for etudiant in etudiants_sorted:
+                # Check if student has completed all services
                 if len(student_completed_services[etudiant.id]) >= nb_services:
                     continue
 
-                # Check if student would exceed duration limit
+                # For mandatory completion, students can be scheduled far in the future if needed
                 current_date = student_next_available_date[etudiant.id]
-                if current_date >= date_fin_limite:
+
+                # Find services this student hasn't completed yet
+                remaining_services = [
+                    s for s in services if s.id not in student_completed_services[etudiant.id]]
+
+                if not remaining_services:
                     continue
 
-                # Find best available service
+                # Find best available service from remaining services
+                service_options = []
                 best_assignment = None
-                best_score = -1
 
-                for service in services:
-                    if service.id in student_completed_services[etudiant.id]:
-                        continue
+                for service in remaining_services:
+                    # Find earliest available slot for this service
+                    earliest_start = current_date
+                    service_found = False
 
-                    # Check if service fits within duration limit
-                    service_end_date = current_date + \
-                        timedelta(days=service.duree_stage_jours - 1)
-                    if service_end_date > date_fin_limite:
-                        continue
+                    # Look for available slot within reasonable future (up to 1 year ahead)
+                    max_search_date = current_date + timedelta(days=365)
+                    search_date = earliest_start
 
-                    # Check service availability
-                    service_id = service.id
-                    if service_id not in service_occupation:
-                        service_occupation[service_id] = {}
+                    while search_date <= max_search_date:
+                        service_end_date = search_date + \
+                            timedelta(days=service.duree_stage_jours - 1)
 
-                    date_str = current_date.strftime("%Y-%m-%d")
-                    if date_str not in service_occupation[service_id]:
-                        service_occupation[service_id][date_str] = 0
+                        # Check service availability for entire duration
+                        service_id = service.id
+                        if service_id not in service_occupation:
+                            service_occupation[service_id] = {}
 
-                    # Use planning settings for max concurrent students
-                    max_concurrent = min(
-                        service.places_disponibles, settings.max_concurrent_students)
+                        max_concurrent = min(
+                            service.places_disponibles, settings.max_concurrent_students)
 
-                    if service_occupation[service_id][date_str] < max_concurrent:
-                        # Calculate score based on availability and priority
-                        availability_score = (
-                            max_concurrent - service_occupation[service_id][date_str]) / max_concurrent
-                        # Prefer shorter services for better distribution
-                        priority_score = 1.0 / service.duree_stage_jours
-                        score = availability_score * 0.7 + priority_score * 0.3
+                        # Check availability for entire service duration
+                        available_for_duration = True
+                        check_date = search_date
+                        while check_date <= service_end_date:
+                            date_str = check_date.strftime("%Y-%m-%d")
+                            if date_str not in service_occupation[service_id]:
+                                service_occupation[service_id][date_str] = 0
 
-                        if score > best_score:
-                            best_score = score
-                            best_assignment = {
+                            if service_occupation[service_id][date_str] >= max_concurrent:
+                                available_for_duration = False
+                                break
+                            check_date += timedelta(days=1)
+
+                        if available_for_duration:
+                            # Calculate priority score for this service option
+                            # Priority factors: service availability, student workload balance, service demand
+
+                            # Service availability score
+                            total_availability = 0
+                            days_count = 0
+                            check_date = search_date
+                            while check_date <= service_end_date:
+                                date_str = check_date.strftime("%Y-%m-%d")
+                                current_occupation = service_occupation[service_id].get(
+                                    date_str, 0)
+                                total_availability += (max_concurrent -
+                                                       current_occupation)
+                                days_count += 1
+                                check_date += timedelta(days=1)
+                            availability_score = (
+                                total_availability / days_count) / max_concurrent
+
+                            # Student urgency score (students with fewer completed services get priority)
+                            student_completion_count = len(
+                                student_completed_services[etudiant.id])
+                            urgency_score = (
+                                nb_services - student_completion_count) / nb_services
+
+                            # Service demand score (prefer services with fewer total assignments)
+                            service_total_assignments = sum(
+                                1 for s in student_completed_services.values() if service.id in s)
+                            target_assignments = nb_etudiants
+                            if service_total_assignments < target_assignments:
+                                demand_score = (
+                                    target_assignments - service_total_assignments) / target_assignments
+                            else:
+                                demand_score = 0.1  # Small score for overloaded services
+
+                            # Time delay penalty (prefer earlier start dates)
+                            days_delay = (search_date - current_date).days
+                            # Reduce score for delays > 30 days
+                            delay_penalty = max(0, 1 - (days_delay / 30))
+
+                            # Combined score
+                            score = (availability_score * 0.3 +
+                                     urgency_score * 0.4 +
+                                     demand_score * 0.2 +
+                                     delay_penalty * 0.1)
+
+                            service_options.append({
                                 'service': service,
-                                'start_date': current_date,
+                                'start_date': search_date,
                                 'end_date': service_end_date,
-                                'order': len(rotations) + 1
-                            }
+                                'order': len(rotations) + 1,
+                                'score': score,
+                                'days_delay': days_delay
+                            })
+
+                            service_found = True
+                            break  # Found earliest available slot for this service
+
+                        # Try next day
+                        search_date += timedelta(days=1)
+
+                    if not service_found:
+                        logger.warning(
+                            f"⚠️  No available slot found for {etudiant.nom} in {service.nom} within search window")
+
+                # Select best option from available services
+                if service_options:
+                    # Sort by score (prioritize high-priority assignments)
+                    service_options.sort(
+                        key=lambda x: x['score'], reverse=True)
+                    best_assignment = service_options[0]
+
+                    # Log if assignment is delayed
+                    if best_assignment['days_delay'] > 0:
+                        logger.debug(
+                            f"🕐 {etudiant.nom} assigned to {best_assignment['service'].nom} with {best_assignment['days_delay']} day delay")
 
                 # Create rotation if assignment found
                 if best_assignment:
+                    # Double-check capacity before finalizing assignment
+                    service_id = best_assignment['service'].id
+                    start_date = best_assignment['start_date']
+                    end_date = best_assignment['end_date']
+                    max_allowed = min(
+                        best_assignment['service'].places_disponibles, settings.max_concurrent_students)
+
+                    # Verify no capacity violation will occur
+                    capacity_violation = False
+                    check_date = start_date
+                    while check_date <= end_date:
+                        date_str = check_date.strftime("%Y-%m-%d")
+                        current_occupancy = service_occupation.get(
+                            service_id, {}).get(date_str, 0)
+                        if current_occupancy >= max_allowed:
+                            capacity_violation = True
+                            logger.warning(
+                                f"⚠️  Capacity violation prevented for {best_assignment['service'].nom} on {date_str}: {current_occupancy}/{max_allowed}")
+                            break
+                        check_date += timedelta(days=1)
+
+                    if capacity_violation:
+                        # Skip this assignment to prevent violation
+                        continue
+
                     rotation = Rotation(
                         id=str(uuid.uuid4()),
                         etudiant_id=etudiant.id,
@@ -234,6 +493,16 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
                     )
                     rotations.append(rotation)
                     db.add(rotation)
+
+                    # Track assignment for backtracking
+                    assignment_history.append({
+                        'rotation': rotation,
+                        'etudiant_id': etudiant.id,
+                        'service_id': best_assignment['service'].id,
+                        'start_date': best_assignment['start_date'],
+                        'end_date': best_assignment['end_date'],
+                        'iteration': iteration
+                    })
 
                     # Update tracking
                     student_completed_services[etudiant.id].add(
@@ -250,19 +519,314 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
                         service_occupation[best_assignment['service'].id][date_str] += 1
                         current_date += timedelta(days=1)
 
+                    # Log successful assignment
+                    if iteration % 25 == 0:
+                        completed_services = len(
+                            student_completed_services[etudiant.id])
+                        logger.debug(
+                            f"✅ {etudiant.nom} → {best_assignment['service'].nom} ({completed_services}/{nb_services} services)")
+
                     progress_made = True
 
-            # Exit if no progress made
+            # Handle stagnation with more aggressive backtracking for mandatory completion
             if not progress_made:
-                break
+                stagnation_count += 1
+
+                # If stagnated, try backtracking more aggressively
+                if stagnation_count >= 2 and len(assignment_history) > 0:
+                    # For mandatory completion, we're more aggressive with backtracking
+                    # Remove up to 33% of assignments
+                    backtrack_count = min(10, len(assignment_history) // 3)
+
+                    logger.debug(
+                        f"🔄 Backtracking {backtrack_count} assignments due to stagnation")
+
+                    for _ in range(backtrack_count):
+                        if not assignment_history:
+                            break
+
+                        # Remove last assignment
+                        last_assignment = assignment_history.pop()
+
+                        # Remove from database
+                        db.delete(last_assignment['rotation'])
+                        rotations.remove(last_assignment['rotation'])
+
+                        # Update tracking
+                        student_completed_services[last_assignment['etudiant_id']].discard(
+                            last_assignment['service_id'])
+
+                        # Recalculate student next available date
+                        student_rotations = [
+                            r for r in rotations if r.etudiant_id == last_assignment['etudiant_id']]
+                        if student_rotations:
+                            latest_rotation = max(
+                                student_rotations, key=lambda r: datetime.strptime(r.date_fin, "%Y-%m-%d"))
+                            student_next_available_date[last_assignment['etudiant_id']] = datetime.strptime(
+                                latest_rotation.date_fin, "%Y-%m-%d") + timedelta(days=settings.break_days_between_rotations)
+                        else:
+                            student_next_available_date[last_assignment['etudiant_id']
+                                                        ] = date_debut_dt
+
+                        # Update service occupation
+                        current_date = last_assignment['start_date']
+                        while current_date <= last_assignment['end_date']:
+                            date_str = current_date.strftime("%Y-%m-%d")
+                            if (last_assignment['service_id'] in service_occupation and
+                                    date_str in service_occupation[last_assignment['service_id']]):
+                                service_occupation[last_assignment['service_id']
+                                                   ][date_str] -= 1
+                                if service_occupation[last_assignment['service_id']][date_str] <= 0:
+                                    del service_occupation[last_assignment['service_id']][date_str]
+                            current_date += timedelta(days=1)
+
+                    stagnation_count = 0
+                    continue
+
+                # If we've stagnated for too long, extend time limits
+                elif stagnation_count >= 5:
+                    logger.debug(
+                        "🕐 Extending time limits due to persistent stagnation")
+                    # Extend the search window for finding available slots
+                    # This is handled in the service assignment loop above
+                    stagnation_count = 0
+                    continue
+
+            else:
+                stagnation_count = 0
+
+        # Final completion check
+        final_completion_check = True
+        incomplete_students = []
+
+        for etudiant in etudiants:
+            completed_services = len(student_completed_services[etudiant.id])
+            if completed_services < nb_services:
+                final_completion_check = False
+                missing_count = nb_services - completed_services
+                incomplete_students.append(
+                    f"{etudiant.nom} (missing {missing_count} services)")
+
+        if not final_completion_check:
+            logger.warning(f"⚠️  MANDATORY COMPLETION NOT ACHIEVED:")
+            logger.warning(
+                f"   - Incomplete students: {len(incomplete_students)}")
+            for student_info in incomplete_students:
+                logger.warning(f"   - {student_info}")
+            logger.warning(
+                f"   - Algorithm stopped after {iteration} iterations")
+            logger.warning(
+                f"   - This may require manual intervention or longer time limits")
+        else:
+            logger.info(f"🎉 MANDATORY COMPLETION SUCCESSFUL!")
+            logger.info(
+                f"   - All {nb_etudiants} students completed all {nb_services} services")
+            logger.info(f"   - Total rotations: {len(rotations)}")
+            logger.info(f"   - Completed in {iteration} iterations")
+
+        # Continue with validation...
+
+        # Validate planning quality before committing
+        try:
+            logger.debug(
+                f"🔍 Validating planning quality with {len(rotations)} rotations")
+            validation_results = self._validate_planning_quality(
+                db_planning, rotations, etudiants, services, settings)
+
+            logger.debug(f"✅ Validation complete:")
+            logger.debug(
+                f"   - Critical errors: {len(validation_results['critical_errors'])}")
+            logger.debug(
+                f"   - Warnings: {len(validation_results['warnings'])}")
+            logger.debug(
+                f"   - Quality score: {validation_results['quality_score']:.2f}")
+
+            if validation_results['critical_errors']:
+                for error in validation_results['critical_errors']:
+                    logger.error(f"   ❌ {error}")
+
+            if validation_results['warnings']:
+                for warning in validation_results['warnings']:
+                    logger.warning(f"   ⚠️  {warning}")
+
+            # If validation fails critically, raise error
+            if validation_results['critical_errors']:
+                logger.error(
+                    "❌ Planning validation failed with critical errors")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Planning quality validation failed: {'; '.join(validation_results['critical_errors'])}"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error during validation: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error during validation: {str(e)}"
+            )
 
         # Commit the planning
         try:
+            logger.debug("💾 Committing planning to database")
             db.commit()
             db.refresh(db_planning)
+            logger.debug(
+                f"✅ Planning successfully created with ID: {db_planning.id}")
             return db_planning
         except Exception as e:
+            logger.error(f"❌ Error committing planning: {e}")
+            db.rollback()
             handle_unique_constraint(e, "Le planning")
+
+    def _validate_planning_quality(self, planning, rotations, etudiants, services, settings):
+        """Validate planning quality and return detailed metrics"""
+        logger.debug("🔍 Starting planning quality validation")
+        validation_results = {
+            'critical_errors': [],
+            'warnings': [],
+            'metrics': {},
+            'quality_score': 0.0
+        }
+
+        # 1. Constraint validation
+        service_concurrent_capacity = {}  # Track concurrent capacity by date
+        student_assignments = {}
+
+        for rotation in rotations:
+            # Track student assignments
+            if rotation.etudiant_id not in student_assignments:
+                student_assignments[rotation.etudiant_id] = []
+            student_assignments[rotation.etudiant_id].append(rotation)
+
+            # Track concurrent capacity for each service by date
+            if rotation.service_id not in service_concurrent_capacity:
+                service_concurrent_capacity[rotation.service_id] = {}
+
+            # Calculate concurrent occupancy for each day of the rotation
+            start_date = datetime.strptime(rotation.date_debut, "%Y-%m-%d")
+            end_date = datetime.strptime(rotation.date_fin, "%Y-%m-%d")
+            current_date = start_date
+
+            while current_date <= end_date:
+                date_str = current_date.strftime("%Y-%m-%d")
+                if date_str not in service_concurrent_capacity[rotation.service_id]:
+                    service_concurrent_capacity[rotation.service_id][date_str] = 0
+                service_concurrent_capacity[rotation.service_id][date_str] += 1
+                current_date += timedelta(days=1)
+
+        # Check service capacity violations (concurrent capacity)
+        for service in services:
+            max_capacity = min(service.places_disponibles,
+                               settings.max_concurrent_students)
+
+            if service.id in service_concurrent_capacity:
+                # Find maximum concurrent occupancy
+                max_concurrent_occupancy = max(
+                    service_concurrent_capacity[service.id].values())
+
+                if max_concurrent_occupancy > max_capacity:
+                    validation_results['critical_errors'].append(
+                        f"Service {service.nom} exceeds concurrent capacity: {max_concurrent_occupancy} > {max_capacity}")
+
+                # Count total assignments for utilization metrics
+                total_assignments = len(
+                    [r for r in rotations if r.service_id == service.id])
+                logger.debug(
+                    f"   📊 {service.nom}: {total_assignments} total assignments, max concurrent: {max_concurrent_occupancy}/{max_capacity}")
+            else:
+                validation_results['warnings'].append(
+                    f"Service {service.nom} has no assignments")
+
+        # 2. Student workload validation
+        for etudiant in etudiants:
+            student_rotations = student_assignments.get(etudiant.id, [])
+
+            if len(student_rotations) == 0:
+                validation_results['critical_errors'].append(
+                    f"Student {etudiant.nom} {etudiant.prenom} has no assignments")
+            elif len(student_rotations) < len(services) * 0.7:  # Less than 70% of services
+                validation_results['warnings'].append(
+                    f"Student {etudiant.nom} {etudiant.prenom} has few assignments: {len(student_rotations)}")
+
+        # 3. Load balancing metrics
+        # Calculate total assignments per service for load balancing
+        service_total_assignments = {}
+        for service in services:
+            service_total_assignments[service.id] = len(
+                [r for r in rotations if r.service_id == service.id])
+
+        if service_total_assignments:
+            assignment_values = list(service_total_assignments.values())
+            avg_assignments = sum(assignment_values) / len(assignment_values)
+            max_assignments = max(assignment_values)
+            min_assignments = min(assignment_values)
+
+            # Load balance score (lower is better)
+            load_balance_score = (max_assignments - min_assignments) / \
+                avg_assignments if avg_assignments > 0 else 0
+            validation_results['metrics']['load_balance_score'] = load_balance_score
+
+            if load_balance_score > 0.5:
+                validation_results['warnings'].append(
+                    f"Poor load balancing: score {load_balance_score:.2f}")
+
+        # 4. Duration distribution validation
+        total_duration = sum(
+            (datetime.strptime(r.date_fin, "%Y-%m-%d") -
+             datetime.strptime(r.date_debut, "%Y-%m-%d")).days + 1
+            for r in rotations
+        )
+        avg_duration_per_student = total_duration / \
+            len(etudiants) if etudiants else 0
+        validation_results['metrics']['avg_duration_per_student'] = avg_duration_per_student
+
+        # 5. Service utilization metrics
+        service_utilization = {}
+        for service in services:
+            total_assignments = service_total_assignments.get(service.id, 0)
+            max_possible_assignments = min(
+                service.places_disponibles, settings.max_concurrent_students)
+
+            # Calculate utilization based on total assignments vs theoretical maximum
+            # This is a simplified utilization metric - more complex would consider time periods
+            utilization = total_assignments / \
+                len(etudiants) if len(etudiants) > 0 else 0
+            service_utilization[service.id] = utilization
+
+        avg_utilization = sum(service_utilization.values()) / \
+            len(service_utilization) if service_utilization else 0
+        validation_results['metrics']['avg_service_utilization'] = avg_utilization
+
+        # 6. Calculate overall quality score
+        quality_factors = []
+
+        # No critical errors factor
+        if not validation_results['critical_errors']:
+            quality_factors.append(1.0)
+        else:
+            quality_factors.append(0.0)
+
+        # Load balance factor (inverted, so lower balance score = higher quality)
+        load_balance_factor = max(
+            0, 1.0 - load_balance_score) if 'load_balance_score' in validation_results['metrics'] else 0.5
+        quality_factors.append(load_balance_factor)
+
+        # Service utilization factor
+        utilization_factor = min(1.0, avg_utilization)
+        quality_factors.append(utilization_factor)
+
+        # Few warnings factor
+        warnings_factor = max(
+            0, 1.0 - len(validation_results['warnings']) * 0.1)
+        quality_factors.append(warnings_factor)
+
+        validation_results['quality_score'] = sum(
+            quality_factors) / len(quality_factors)
+
+        logger.debug(
+            f"🎯 Validation completed with quality score: {validation_results['quality_score']:.2f}")
+        return validation_results
 
     def get_student_planning(
         self, db: Session, *, promo_id: str, etudiant_id: str

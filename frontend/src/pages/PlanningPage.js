@@ -21,6 +21,7 @@ import {
   getStudentScheduleDetail,
   updateRotation,
   exportPlanningExcel,
+  validatePlanning,
 } from "../services/api";
 import {
   Calendar,
@@ -50,6 +51,8 @@ const PlanningPage = () => {
   const [editingValue, setEditingValue] = useState("");
   const [allServices, setAllServices] = useState([]);
   const [allStudents, setAllStudents] = useState([]);
+  const [validationResult, setValidationResult] = useState(null);
+  const [validationLoading, setValidationLoading] = useState(false);
 
   useEffect(() => {
     const fetchPromos = async () => {
@@ -126,6 +129,26 @@ const PlanningPage = () => {
 
     loadEditingData();
   }, [selectedPromoId]);
+
+  // Fetch validation results when planning changes
+  useEffect(() => {
+    const fetchValidation = async () => {
+      if (!planning?.id) {
+        setValidationResult(null);
+        return;
+      }
+      setValidationLoading(true);
+      try {
+        const { data } = await validatePlanning(planning.id);
+        setValidationResult(data);
+      } catch (e) {
+        setValidationResult(null);
+      } finally {
+        setValidationLoading(false);
+      }
+    };
+    fetchValidation();
+  }, [planning]);
 
   const selectedPromo = promotions.find((p) => p.id === selectedPromoId);
   const selectedYear = promotionYears.find((y) => y.id === selectedYearId);
@@ -464,6 +487,42 @@ const PlanningPage = () => {
       </div>
 
       <Message text={message} type={type} />
+
+      {/* Warnings & Conflicts Section */}
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>⚠️ Warnings & Conflicts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {validationLoading ? (
+            <p>Vérification des anomalies...</p>
+          ) : validationResult &&
+            (validationResult.erreurs.length > 0 ||
+              validationResult.warnings.length > 0) ? (
+            <ul className="space-y-1">
+              {validationResult.erreurs.map((err, idx) => (
+                <li key={"err-" + idx} className="text-red-600">
+                  ❌ {err}
+                </li>
+              ))}
+              {validationResult.warnings &&
+                validationResult.warnings.map((warn, idx) => (
+                  <li key={"warn-" + idx} className="text-yellow-600">
+                    ⚠️ {warn}
+                  </li>
+                ))}
+            </ul>
+          ) : validationResult ? (
+            <p className="text-green-600">
+              Aucune anomalie détectée. Toutes les rotations sont valides !
+            </p>
+          ) : (
+            <p className="text-muted-foreground">
+              Aucune donnée de validation disponible.
+            </p>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Selection Controls */}
       <Card>

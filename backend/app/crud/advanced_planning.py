@@ -209,10 +209,10 @@ class AdvancedPlanningAlgorithm:
 
                 if best_assignment:
                     rotation = self._create_rotation(etudiant, best_assignment)
-                rotations.append(rotation)
-                self._update_algorithm_state(
-                    etudiant['id'], best_assignment)
-                progress_made = True
+                    rotations.append(rotation)
+                    self._update_algorithm_state(
+                        etudiant['id'], best_assignment)
+                    progress_made = True
 
             if not progress_made:
                 # Advance all student dates by one day to break deadlock
@@ -224,6 +224,8 @@ class AdvancedPlanningAlgorithm:
         return PlanningSchema(
             id=str(uuid.uuid4()),
             promo_id=promotion['id'],
+            promotion_year_id=None,
+            annee_niveau=None,
             date_creation=datetime.now(),
             promo_nom=promotion['nom'],
             rotations=rotations
@@ -413,27 +415,31 @@ class AdvancedPlanningAlgorithm:
             if len(self.student_completed_services[etudiant['id']]) != nb_services:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Impossible d'assigner tous les services à l'étudiant {etudiant['prenom']} {etudiant['nom']}"
+                    detail=f"Impossible d'assigner tous les services à l'étudiant {etudiant['nom']}"
                 )
 
     def _save_planning_to_db(self, planning_result: PlanningSchema) -> Planning:
-        """Save planning to database"""
+        """Save planning result to database"""
+        # Create the main planning record
         db_planning = Planning(
             id=planning_result.id,
-            promo_id=planning_result.promo_id
+            promo_id=planning_result.promo_id,
+            promotion_year_id=planning_result.promotion_year_id,
+            annee_niveau=planning_result.annee_niveau,
+            date_creation=planning_result.date_creation
         )
         self.db.add(db_planning)
-        self.db.flush()
+        self.db.flush()  # Get the ID
 
-        # Save rotations
-        for rotation_data in planning_result.rotations:
+        # Create rotation records
+        for rotation in planning_result.rotations:
             db_rotation = Rotation(
-                id=str(uuid.uuid4()),
-                etudiant_id=rotation_data.etudiant_id,
-                service_id=rotation_data.service_id,
-                date_debut=rotation_data.date_debut,
-                date_fin=rotation_data.date_fin,
-                ordre=rotation_data.ordre,
+                id=rotation.id,
+                etudiant_id=rotation.etudiant_id,
+                service_id=rotation.service_id,
+                date_debut=rotation.date_debut,
+                date_fin=rotation.date_fin,
+                ordre=rotation.ordre,
                 planning_id=db_planning.id
             )
             self.db.add(db_rotation)
@@ -623,6 +629,8 @@ class AdvancedPlanningAlgorithm:
         return PlanningSchema(
             id=db_planning.id,
             promo_id=db_planning.promo_id,
+            promotion_year_id=db_planning.promotion_year_id,
+            annee_niveau=db_planning.annee_niveau,
             date_creation=db_planning.date_creation,
             promo_nom=db_planning.promotion.nom,
             rotations=rotations

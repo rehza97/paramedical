@@ -17,7 +17,8 @@ from ...schemas import (
     PlanningEfficiencyAnalysis,
     PlanningValidationResult,
     RotationUpdate,
-    MessageResponse
+    MessageResponse,
+    Promotion
 )
 
 router = APIRouter()
@@ -62,137 +63,6 @@ def generate_planning(
         "message": "Planning généré avec succès",
         "planning": planning_dict
     }
-
-
-@router.post("/generer-avance/{promo_id}", response_model=AdvancedPlanningResponse)
-def generate_advanced_planning(
-    promo_id: str,
-    date_debut: str = "2025-01-01",
-    db: Session = Depends(get_db)
-):
-    """
-    Generate planning using advanced algorithm with intelligent load balancing
-    Includes efficiency analysis and validation
-    """
-    advanced_algo = get_advanced_planning_algorithm(db)
-
-    planning_result, efficiency_analysis, validation_result = advanced_algo.generate_advanced_planning(
-        promo_id=promo_id,
-        date_debut_str=date_debut
-    )
-
-    return AdvancedPlanningResponse(
-        message="Planning avancé généré avec succès",
-        planning=planning_result,
-        efficiency_analysis=efficiency_analysis,
-        validation_result=validation_result
-    )
-
-
-@router.post("/analyser-efficacite/{promo_id}", response_model=PlanningEfficiencyAnalysis)
-def analyze_planning_efficiency(
-    promo_id: str,
-    db: Session = Depends(get_db)
-):
-    """Analyze the efficiency of an existing planning"""
-    # Get existing planning
-    db_planning = planning.get_by_promotion(db, promo_id=promo_id)
-    if not db_planning:
-        raise HTTPException(status_code=404, detail="Planning non trouvé")
-
-    # Get services
-    services = db.query(service_crud.model).all()
-    services_list = [
-        {
-            'id': s.id,
-            'nom': s.nom,
-            'places_disponibles': s.places_disponibles,
-            'duree_stage_jours': s.duree_stage_jours
-        } for s in services
-    ]
-
-    # Convert planning to schema format
-    planning_schema = {
-        "id": db_planning.id,
-        "promo_id": db_planning.promo_id,
-        "date_creation": db_planning.date_creation,
-        "promo_nom": db_planning.promotion.nom,
-        "rotations": []
-    }
-
-    for rotation in db_planning.rotations:
-        rotation_dict = {
-            "id": rotation.id,
-            "etudiant_id": rotation.etudiant_id,
-            "service_id": rotation.service_id,
-            "date_debut": rotation.date_debut,
-            "date_fin": rotation.date_fin,
-            "ordre": rotation.ordre,
-            "planning_id": rotation.planning_id,
-            "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
-            "service_nom": rotation.service.nom
-        }
-        planning_schema["rotations"].append(rotation_dict)
-
-    # Analyze efficiency
-    advanced_algo = get_advanced_planning_algorithm(db)
-    from ...schemas import Planning as PlanningSchema
-    planning_obj = PlanningSchema(**planning_schema)
-
-    return advanced_algo._analyser_efficacite_planning(planning_obj, services_list)
-
-
-@router.post("/valider/{promo_id}", response_model=PlanningValidationResult)
-def validate_planning(
-    promo_id: str,
-    db: Session = Depends(get_db)
-):
-    """Validate an existing planning and return any errors"""
-    # Get existing planning
-    db_planning = planning.get_by_promotion(db, promo_id=promo_id)
-    if not db_planning:
-        raise HTTPException(status_code=404, detail="Planning non trouvé")
-
-    # Get services
-    services = db.query(service_crud.model).all()
-    services_list = [
-        {
-            'id': s.id,
-            'nom': s.nom,
-            'places_disponibles': s.places_disponibles,
-            'duree_stage_jours': s.duree_stage_jours
-        } for s in services
-    ]
-
-    # Convert planning to schema format
-    planning_schema = {
-        "id": db_planning.id,
-        "promo_id": db_planning.promo_id,
-        "date_creation": db_planning.date_creation,
-        "promo_nom": db_planning.promotion.nom,
-        "rotations": []
-    }
-
-    for rotation in db_planning.rotations:
-        rotation_dict = {
-            "id": rotation.id,
-            "etudiant_id": rotation.etudiant_id,
-            "service_id": rotation.service_id,
-            "date_debut": rotation.date_debut,
-            "date_fin": rotation.date_fin,
-            "ordre": rotation.ordre,
-            "planning_id": rotation.planning_id,
-            "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
-            "service_nom": rotation.service.nom
-        }
-        planning_schema["rotations"].append(rotation_dict)
-
-    # Validate planning
-    advanced_algo = get_advanced_planning_algorithm(db)
-    from ...schemas import Planning as PlanningSchema
-    planning_obj = PlanningSchema(**planning_schema)
-
-    return advanced_algo._valider_planning(planning_obj, services_list)
 
 
 @router.get("/{promo_id}", response_model=Planning)
@@ -457,3 +327,91 @@ def export_planning_excel(
             status_code=500,
             detail=f"Erreur lors de l'export: {str(e)}"
         )
+
+
+@router.get("/{planning_id}/promotions", response_model=List[Promotion])
+def get_promotions_for_planning(
+    planning_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get all promotions associated with a specific planning"""
+    try:
+        from ...models import Planning, Promotion
+
+        # Get the planning
+        db_planning = db.query(Planning).filter(
+            Planning.id == planning_id).first()
+        if not db_planning:
+            raise HTTPException(status_code=404, detail="Planning non trouvé")
+
+        # Get the promotion associated with this planning
+        promotion = db.query(Promotion).filter(
+            Promotion.id == db_planning.promo_id).first()
+        if not promotion:
+            raise HTTPException(
+                status_code=404, detail="Promotion non trouvée")
+
+        # Return the promotion (since each planning belongs to one promotion)
+        return [promotion]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la récupération des promotions: {str(e)}"
+        )
+
+
+@router.get("/{planning_id}/details", response_model=dict)
+def get_planning_details(
+    planning_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get planning details with promotion information"""
+    try:
+        from ...models import Planning, Promotion
+
+        # Get the planning with promotion info
+        db_planning = db.query(Planning).filter(
+            Planning.id == planning_id).first()
+        if not db_planning:
+            raise HTTPException(status_code=404, detail="Planning non trouvé")
+
+        # Get the promotion
+        promotion = db.query(Promotion).filter(
+            Promotion.id == db_planning.promo_id).first()
+        if not promotion:
+            raise HTTPException(
+                status_code=404, detail="Promotion non trouvée")
+
+        return {
+            "planning_id": db_planning.id,
+            "promotion_id": promotion.id,
+            "promotion_name": promotion.nom,
+            "planning_creation_date": db_planning.date_creation.isoformat() if db_planning.date_creation else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la récupération des détails du planning: {str(e)}"
+        )
+
+
+@router.get("/{planning_id}/validate", response_model=PlanningValidationResult)
+def validate_planning(
+    planning_id: str,
+    db: Session = Depends(get_db)
+):
+    """Validate a planning and return warnings/conflicts"""
+    result = rotation.validate_all_assignments(db, planning_id=planning_id)
+    # The result dict may have keys 'is_valid', 'erreurs', 'warnings', etc.
+    # Map 'erreurs' to 'errors' and ensure 'warnings' is present
+    return {
+        "is_valid": result.get("is_valid", False),
+        "erreurs": result.get("erreurs", []),
+        "warnings": result.get("warnings", []),
+    }

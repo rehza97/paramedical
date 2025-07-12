@@ -66,7 +66,7 @@ def create_planning_settings(
         raise HTTPException(
             status_code=400, detail="Planning settings already exist. Use PUT to update.")
 
-    settings = PlanningSettings(**settings_create.dict())
+    settings = PlanningSettings(**settings_create.model_dump())
     db.add(settings)
     db.commit()
     db.refresh(settings)
