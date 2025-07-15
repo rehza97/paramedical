@@ -13,7 +13,7 @@ from ...schemas import (
 from ...crud import planning, etudiant, service as service_crud, get_advanced_planning_algorithm, rotation
 from ...database import get_db
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import pandas as pd
@@ -32,7 +32,7 @@ def generate_planning(
     promo_id: str,
     promotion_year_id: str = None,  # Single year to generate planning for
     # NEW: array of years when all_years_mode is true
-    promotion_year_ids: List[str] = None,
+    promotion_year_ids: List[str] = Query(None),
     date_debut: str = None,  # Made optional - will get from database if not provided
     all_years_mode: bool = False,  # NEW: allow frontend to pass this as a query param
     db: Session = Depends(get_db)
@@ -89,7 +89,13 @@ def generate_planning(
             f"⚠️ No date_debut determined, using default: {date_debut}")
 
     # If all_years_mode is true and promotion_year_ids is provided, use those years
+    logger.info(f"🔧 all_years_mode: {all_years_mode}")
+    logger.info(f"🔧 promotion_year_ids: {promotion_year_ids}")
+    logger.info(
+        f"🔧 Condition check: all_years_mode={all_years_mode} and promotion_year_ids={bool(promotion_year_ids)}")
+
     if all_years_mode and promotion_year_ids:
+        logger.info(f"✅ Entering NEW ALL YEARS MODE logic")
         # Generate ONE BIG PLANNING for all years combined
         logger.info(
             f"🔄 ALL YEARS MODE: Generating one big planning for all years: {promotion_year_ids}")
@@ -252,6 +258,7 @@ def get_planning(
             "date_fin": rotation.date_fin,
             "ordre": rotation.ordre,
             "planning_id": rotation.planning_id,
+            "promotion_year_id": rotation.promotion_year_id,
             "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
             "service_nom": rotation.service.nom
         }

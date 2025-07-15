@@ -158,20 +158,37 @@ const PlanningPage = () => {
   // Set default selectedTabYearId when promotionYears change
   useEffect(() => {
     if (promotionYears && promotionYears.length > 0) {
-      const active = promotionYears.find((y) => y.is_active);
-      setSelectedTabYearId(active ? active.id : promotionYears[0].id);
+      // Default to "All Years" (empty string) when in all years mode
+      setSelectedTabYearId("");
     }
   }, [promotionYears]);
 
-  // Filtered rotations (no year filtering, just search)
+  // Filtered rotations (with year filtering and search)
   const filteredRotations =
-    planning?.rotations?.filter(
-      (rotation) =>
+    planning?.rotations?.filter((rotation) => {
+      // First filter by search term
+      const matchesSearch =
         rotation.etudiant_nom
           ?.toLowerCase()
           .includes(searchTerm.toLowerCase()) ||
-        rotation.service_nom?.toLowerCase().includes(searchTerm.toLowerCase())
-    ) || [];
+        rotation.service_nom?.toLowerCase().includes(searchTerm.toLowerCase());
+
+      // Then filter by selected year tab (if all years mode is enabled)
+      let matchesYear = true;
+      if (
+        allYearsMode &&
+        selectedTabYearId &&
+        planning?.promotion_year_id === null
+      ) {
+        // For combined planning, filter by promotion_year_id in rotation
+        // If selectedTabYearId is empty, show all rotations (no filtering)
+        matchesYear =
+          selectedTabYearId === "" ||
+          rotation.promotion_year_id === selectedTabYearId;
+      }
+
+      return matchesSearch && matchesYear;
+    }) || [];
 
   // Filtered students (no year filtering, just search)
   const filteredStudents =
@@ -192,6 +209,20 @@ const PlanningPage = () => {
   console.log("studentSchedules:", studentSchedules);
   console.log("filteredRotations:", filteredRotations);
   console.log("filteredStudents:", filteredStudents);
+
+  // Debug: Log rotation data to see if promotion_year_id is present
+  if (planning?.rotations) {
+    console.log(
+      "Sample rotations with promotion_year_id:",
+      planning.rotations.slice(0, 3).map((r) => ({
+        id: r.id,
+        etudiant_nom: r.etudiant_nom,
+        service_nom: r.service_nom,
+        promotion_year_id: r.promotion_year_id,
+        date_debut: r.date_debut,
+      }))
+    );
+  }
 
   const selectedPromo = promotions.find((p) => p.id === selectedPromoId);
   const selectedYear = promotionYears.find((y) => y.id === selectedYearId);
@@ -505,6 +536,19 @@ const PlanningPage = () => {
 
     return (
       <div className="flex space-x-2 mb-4">
+        {/* All Years tab */}
+        <button
+          className={`px-4 py-2 rounded ${
+            selectedTabYearId === "" ? "bg-blue-600 text-white" : "bg-gray-200"
+          }`}
+          onClick={() => {
+            setSelectedTabYearId("");
+          }}
+        >
+          Toutes les années
+        </button>
+
+        {/* Individual year tabs */}
         {promotionYears?.map((year) => (
           <button
             key={year.id}
@@ -515,21 +559,6 @@ const PlanningPage = () => {
             }`}
             onClick={() => {
               setSelectedTabYearId(year.id);
-              if (allYearsMode && allPlannings.length > 0) {
-                const selectedPlanning = allPlannings.find(
-                  (p) => p.promotion_year_id === year.id
-                );
-                if (selectedPlanning) {
-                  setPlanning(selectedPlanning);
-                } else {
-                  // Fallback to default if no planning found for this year
-                  setPlanning(null);
-                  showMessage(
-                    `Aucun planning trouvé pour l'année ${year.nom}. Générez-en un d'abord.`,
-                    "warning"
-                  );
-                }
-              }
             }}
           >
             {year.nom}
@@ -1018,7 +1047,7 @@ const PlanningPage = () => {
                 Chargement des plannings étudiants...
               </div>
             ) : filteredStudents.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 gap-4">
                 {filteredStudents.map((schedule, index) => {
                   // Calculate student statistics from rotations
                   const studentRotations =
