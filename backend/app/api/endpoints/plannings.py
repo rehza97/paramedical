@@ -1,13 +1,3 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
-import pandas as pd
-import io
-from datetime import datetime
-
-from ...database import get_db
-from ...crud import planning, etudiant, service as service_crud, get_advanced_planning_algorithm, rotation
 from ...schemas import (
     Planning,
     PlanningResponse,
@@ -20,6 +10,19 @@ from ...schemas import (
     MessageResponse,
     Promotion
 )
+from ...crud import planning, etudiant, service as service_crud, get_advanced_planning_algorithm, rotation
+from ...database import get_db
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
+import pandas as pd
+import io
+import logging
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
@@ -27,13 +30,131 @@ router = APIRouter()
 @router.post("/generer/{promo_id}", response_model=PlanningResponse)
 def generate_planning(
     promo_id: str,
-    date_debut: str = "2025-01-01",
+    promotion_year_id: str = None,  # Single year to generate planning for
+    # NEW: array of years when all_years_mode is true
+    promotion_year_ids: List[str] = None,
+    date_debut: str = None,  # Made optional - will get from database if not provided
     all_years_mode: bool = False,  # NEW: allow frontend to pass this as a query param
     db: Session = Depends(get_db)
 ):
     """Generate planning for a promotion"""
+
+    # Get planning settings for default date_debut
+    from ...crud.planning_settings import planning_settings
+    settings = planning_settings.get_or_create_default(db)
+
+    # Use settings start date as default
+    default_date_debut = settings.academic_year_start
+    logger.info(f"🔧 Default date_debut from settings: {default_date_debut}")
+
+    # If promotion_year_id is provided, try to get year-specific date_debut
+    if promotion_year_id:
+        from ...models import PromotionYear
+        promotion_year = db.query(PromotionYear).filter(
+            PromotionYear.id == promotion_year_id,
+            PromotionYear.promotion_id == promo_id
+        ).first()
+
+        if promotion_year:
+            logger.info(
+                f"🔧 Found promotion year: {promotion_year.nom} (ID: {promotion_year.id})")
+            logger.info(
+                f"🔧 Year-specific date_debut: {promotion_year.date_debut}")
+            logger.info(f"🔧 Year calendar: {promotion_year.annee_calendaire}")
+
+            # Use year-specific date if available, otherwise construct from calendar year
+            if promotion_year.date_debut:
+                date_debut = promotion_year.date_debut
+                logger.info(f"✅ Using year-specific date_debut: {date_debut}")
+            else:
+                # Construct date from calendar year (e.g., 2029 -> 2029-01-01)
+                date_debut = f"{promotion_year.annee_calendaire}-01-01"
+                logger.info(
+                    f"✅ Constructed date_debut from calendar year: {date_debut}")
+        else:
+            logger.warning(
+                f"⚠️ Promotion year not found for ID: {promotion_year_id}")
+            date_debut = default_date_debut
+    else:
+        # No specific year provided, use default
+        date_debut = default_date_debut
+        logger.info(f"✅ Using default date_debut: {date_debut}")
+
+    # Override with provided date_debut if specified
+    if date_debut:
+        logger.info(f"🔧 Final date_debut: {date_debut}")
+    else:
+        date_debut = default_date_debut
+        logger.warning(
+            f"⚠️ No date_debut determined, using default: {date_debut}")
+
+    # If all_years_mode is true and promotion_year_ids is provided, use those years
+    if all_years_mode and promotion_year_ids:
+        # Generate ONE BIG PLANNING for all years combined
+        logger.info(
+            f"🔄 ALL YEARS MODE: Generating one big planning for all years: {promotion_year_ids}")
+
+        # Get all promotion years
+        from ...models import PromotionYear
+        promotion_years = db.query(PromotionYear).filter(
+            PromotionYear.id.in_(promotion_year_ids),
+            PromotionYear.promotion_id == promo_id
+        ).all()
+
+        if not promotion_years:
+            raise HTTPException(
+                status_code=400,
+                detail="Aucune année de promotion trouvée"
+            )
+
+        logger.info(f"✅ Found {len(promotion_years)} years to combine:")
+        for year in promotion_years:
+            logger.info(
+                f"   - {year.nom} (ID: {year.id}, Calendar: {year.annee_calendaire})")
+
+        # Generate one big planning that includes all years
+        db_planning, number_of_services, number_of_students = planning.generate_planning_for_all_years(
+            db=db,
+            promo_id=promo_id,
+            date_debut=date_debut,
+            promotion_years=promotion_years
+        )
+
+        # Return the single big planning
+        planning_dict = {
+            "id": db_planning.id,
+            "promo_id": db_planning.promo_id,
+            "promotion_year_id": None,  # No specific year since it's combined
+            "annee_niveau": None,  # No specific level since it's combined
+            "date_creation": db_planning.date_creation,
+            "promo_nom": db_planning.promotion.nom,
+            "rotations": []
+        }
+        for rotation in db_planning.rotations:
+            rotation_dict = {
+                "id": rotation.id,
+                "etudiant_id": rotation.etudiant_id,
+                "service_id": rotation.service_id,
+                "date_debut": rotation.date_debut,
+                "date_fin": rotation.date_fin,
+                "ordre": rotation.ordre,
+                "planning_id": rotation.planning_id,
+                "promotion_year_id": rotation.promotion_year_id,
+                "etudiant_nom": f"{rotation.etudiant.prenom} {rotation.etudiant.nom}",
+                "service_nom": rotation.service.nom
+            }
+            planning_dict["rotations"].append(rotation_dict)
+
+        return {
+            "message": "Planning généré avec succès pour toutes les années combinées",
+            "planning": planning_dict,
+            "number_of_services": number_of_services,
+            "number_of_students": number_of_students
+        }
+
+    # Original logic for single year or all years mode
     db_planning, number_of_services, number_of_students = planning.generate_planning(
-        db=db, promo_id=promo_id, date_debut=date_debut, all_years_mode=all_years_mode
+        db=db, promo_id=promo_id, date_debut=date_debut, all_years_mode=all_years_mode, promotion_year_id=promotion_year_id
     )
 
     if all_years_mode:

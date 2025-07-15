@@ -204,11 +204,26 @@ const PlanningPage = () => {
 
     try {
       setLoading(true);
-      // Pass allYearsMode to the API
+
+      // Determine which years to generate planning for
+      let yearToGenerate = null;
+      let yearsToGenerate = null;
+
+      if (allYearsMode) {
+        // When all years mode is enabled, pass all available years
+        yearsToGenerate = promotionYears.map((year) => year.id);
+      } else if (selectedYearId) {
+        // Single year mode - use the selected year
+        yearToGenerate = selectedYearId;
+      }
+
+      // Pass allYearsMode and year parameters to the API
       const { data } = await generatePlanning(
         selectedPromoId,
-        "2025-01-01",
-        allYearsMode
+        null, // date_debut will be retrieved from database settings
+        allYearsMode,
+        yearToGenerate, // Pass the selected year ID (single year mode)
+        yearsToGenerate // Pass the array of year IDs (all years mode)
       );
       showMessage("Planning généré avec succès");
       // Save service and student counts from backend
@@ -227,6 +242,10 @@ const PlanningPage = () => {
           setPlanning(selectedPlanning);
           setAllPlannings(plannings); // Store all plannings
         }
+      } else if (allYearsMode && data.planning) {
+        // NEW: Single big planning returned for all years combined
+        setPlanning(data.planning);
+        setAllPlannings([data.planning]); // Store as single planning
       } else {
         // Single planning returned (legacy behavior)
         setPlanning(data.planning);

@@ -43,10 +43,26 @@ export const updateSpeciality = (id, data) =>
 export const deleteSpeciality = (id) => api.delete(`/specialities/${id}`);
 
 // ===== PLANNINGS =====
-export const generatePlanning = (promoId, date_debut, all_years_mode = false) =>
-  api.post(
-    `/plannings/generer/${promoId}?date_debut=${date_debut}&all_years_mode=${all_years_mode}`
-  );
+export const generatePlanning = (
+  promoId,
+  date_debut,
+  all_years_mode = false,
+  promotion_year_id = null,
+  promotion_year_ids = null
+) => {
+  const params = new URLSearchParams();
+  if (date_debut) params.append("date_debut", date_debut);
+  if (all_years_mode) params.append("all_years_mode", all_years_mode);
+  if (promotion_year_id) params.append("promotion_year_id", promotion_year_id);
+  if (promotion_year_ids && promotion_year_ids.length > 0) {
+    // Add each year ID as a separate parameter
+    promotion_year_ids.forEach((id) => {
+      params.append("promotion_year_ids", id);
+    });
+  }
+
+  return api.post(`/plannings/generer/${promoId}?${params.toString()}`);
+};
 export const getPlanning = (promoId) => api.get(`/plannings/${promoId}`);
 export const getStudentPlanning = (promoId, etudiantId) =>
   api.get(`/plannings/etudiant/${promoId}/${etudiantId}`);

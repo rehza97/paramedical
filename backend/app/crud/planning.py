@@ -23,13 +23,14 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
         return db.query(Planning).filter(Planning.promo_id == promo_id).first()
 
     def generate_planning(
-        self, db: Session, *, promo_id: str, date_debut: str = None, all_years_mode: bool = False
+        self, db: Session, *, promo_id: str, date_debut: str = None, all_years_mode: bool = False, promotion_year_id: str = None
     ) -> tuple[Planning, int, int]:
         """Generate optimized planning for a promotion using planning settings"""
         logger.debug(
             f"🚀 Starting planning generation for promotion: {promo_id}")
         logger.debug(f"📅 Date debut: {date_debut}")
         logger.debug(f"🟢 all_years_mode: {all_years_mode}")
+        logger.debug(f"📅 promotion_year_id: {promotion_year_id}")
 
         # Get planning settings
         try:
@@ -137,6 +138,40 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
                     detail="Aucun planning généré"
                 )
             return created_plannings, total_services, len(etudiants)
+        elif promotion_year_id:
+            # SPECIFIC YEAR MODE: Generate planning for a specific year
+            logger.debug(
+                f"🔄 SPECIFIC YEAR MODE: Generating planning for year ID: {promotion_year_id}")
+            specific_year = db.query(PromotionYear).filter(
+                PromotionYear.id == promotion_year_id,
+                PromotionYear.promotion_id == promo_id
+            ).first()
+            if not specific_year:
+                logger.error(
+                    f"❌ Specified year not found: {promotion_year_id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Année spécifiée non trouvée"
+                )
+            logger.debug(
+                f"✅ Specific year found: {specific_year.annee_niveau}")
+            services = specific_year.services
+            if not services:
+                logger.error(
+                    f"❌ No services configured for specified year: {specific_year.id}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucun service configuré pour cette année"
+                )
+            logger.debug(f"✅ Found {len(services)} services:")
+            for service in services:
+                logger.debug(
+                    f"   - {service.nom} (duration: {service.duree_stage_jours} days, capacity: {service.places_disponibles})")
+            planning = self._generate_planning_for_year(
+                db, promotion, specific_year, etudiants, services,
+                settings, date_debut, logger
+            )
+            return planning, len(services), len(etudiants)
         else:
             # ACTIVE YEAR ONLY MODE
             logger.debug(
@@ -171,8 +206,97 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
             )
             return planning, len(services), len(etudiants)
 
+    def generate_planning_for_all_years(
+        self, db: Session, *, promo_id: str, date_debut: str, promotion_years: List
+    ) -> tuple[Planning, int, int]:
+        """Generate one big planning that combines all years into a single comprehensive plan"""
+        logger.debug(
+            f"🚀 Starting ALL YEARS planning generation for promotion: {promo_id}")
+        logger.debug(f"📅 Date debut: {date_debut}")
+        logger.debug(f"📅 Number of years to combine: {len(promotion_years)}")
+
+        # Get planning settings
+        try:
+            from .planning_settings import planning_settings
+            settings = planning_settings.get_or_create_default(db)
+            logger.debug(f"✅ Planning settings loaded: {settings}")
+        except Exception as e:
+            logger.error(f"❌ Error loading planning settings: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error loading planning settings: {str(e)}"
+            )
+
+        # Get promotion
+        promotion = db.query(Promotion).filter(
+            Promotion.id == promo_id).first()
+        if not promotion:
+            logger.error(f"❌ Promotion not found: {promo_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Promotion non trouvée"
+            )
+        logger.debug(f"✅ Promotion found: {promotion.nom}")
+
+        # Get all active students
+        etudiants = db.query(Etudiant).filter(
+            Etudiant.promotion_id == promo_id,
+            Etudiant.is_active == True
+        ).all()
+        if not etudiants:
+            logger.error(
+                f"❌ No active students found for promotion: {promo_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Aucun étudiant actif trouvé pour cette promotion"
+            )
+        logger.debug(f"✅ Found {len(etudiants)} active students")
+        for etudiant in etudiants:
+            logger.debug(f"   - {etudiant.prenom} {etudiant.nom}")
+
+        # Collect all services from all years
+        all_services = []
+        all_services_by_year = {}
+
+        for promotion_year in promotion_years:
+            year_services = promotion_year.services
+            if year_services:
+                all_services.extend(year_services)
+                all_services_by_year[promotion_year.id] = year_services
+                logger.debug(
+                    f"✅ Found {len(year_services)} services for {promotion_year.nom}:")
+                for service in year_services:
+                    logger.debug(
+                        f"   - {service.nom} (duration: {service.duree_stage_jours} days, capacity: {service.places_disponibles})")
+            else:
+                logger.warning(
+                    f"⚠️ No services configured for {promotion_year.nom}")
+
+        if not all_services:
+            logger.error(f"❌ No services found across all years")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Aucun service configuré pour les années sélectionnées"
+            )
+
+        logger.debug(f"📊 Total services across all years: {len(all_services)}")
+
+        # Generate the big planning
+        planning = self._generate_big_planning_for_all_years(
+            db, promotion, promotion_years, etudiants, all_services, all_services_by_year,
+            settings, date_debut, logger
+        )
+
+        return planning, len(all_services), len(etudiants)
+
     def _generate_planning_for_year(self, db, promotion, promotion_year, etudiants, services, settings, date_debut, logger):
         """Helper to generate a single planning for a specific promotion year."""
+        logger.debug(
+            f"🔧 _generate_planning_for_year called with date_debut: {date_debut}")
+        logger.debug(
+            f"🔧 Promotion year: {promotion_year.nom} (ID: {promotion_year.id})")
+        logger.debug(f"🔧 Calendar year: {promotion_year.annee_calendaire}")
+
         # Clear existing planning properly
         existing_planning = self.get_by_promotion(db, promo_id=promotion.id)
         if existing_planning:
@@ -729,6 +853,181 @@ class CRUDPlanning(CRUDBase[Planning, PlanningCreate, PlanningBase]):
             logger.error(f"❌ Error committing planning: {e}")
             db.rollback()
             handle_unique_constraint(e, "Le planning")
+
+    def _generate_big_planning_for_all_years(
+        self, db, promotion, promotion_years, etudiants, all_services, all_services_by_year,
+        settings, date_debut, logger
+    ):
+        """Helper to generate one big planning that combines all years"""
+        logger.debug(
+            f"🔧 _generate_big_planning_for_all_years called with date_debut: {date_debut}")
+
+        # Clear existing planning properly
+        existing_planning = self.get_by_promotion(db, promo_id=promotion.id)
+        if existing_planning:
+            # Delete in correct order to avoid foreign key violations
+            from ..models import StudentSchedule, StudentScheduleDetail
+
+            # Get all student schedules for this planning
+            student_schedules = db.query(StudentSchedule).filter(
+                StudentSchedule.planning_id == existing_planning.id).all()
+
+            # Delete student schedule details first
+            for schedule in student_schedules:
+                db.query(StudentScheduleDetail).filter(
+                    StudentScheduleDetail.schedule_id == schedule.id).delete()
+
+            # Delete student schedules
+            db.query(StudentSchedule).filter(
+                StudentSchedule.planning_id == existing_planning.id).delete()
+
+            # Now delete rotations
+            db.query(Rotation).filter(Rotation.planning_id ==
+                                      existing_planning.id).delete()
+
+            # Finally delete the planning
+            db.delete(existing_planning)
+            db.flush()
+
+        # Create new big planning (no specific year since it's combined)
+        db_planning = Planning(
+            id=str(uuid.uuid4()),
+            promo_id=promotion.id,
+            promotion_year_id=None,  # No specific year for combined planning
+            annee_niveau=None  # No specific level for combined planning
+        )
+        db.add(db_planning)
+        db.flush()
+
+        # Calculate planning constraints for the big planning
+        try:
+            nb_etudiants = len(etudiants)
+            nb_services = len(all_services)
+            date_debut_dt = datetime.strptime(date_debut, "%Y-%m-%d")
+
+            # For the big planning, we need to account for all services across all years
+            # Each student must complete all services from all years
+            estimated_total_days = 0
+            for service in all_services:
+                # Each service needs to run enough times to accommodate all students
+                service_capacity = min(
+                    service.places_disponibles, settings.max_concurrent_students)
+                service_runs_needed = math.ceil(
+                    nb_etudiants / service_capacity)
+                estimated_total_days = max(
+                    estimated_total_days, service_runs_needed * service.duree_stage_jours)
+
+            # Add buffer for breaks and scheduling flexibility
+            buffer_days = estimated_total_days * 0.3  # 30% buffer
+            total_duration_days = estimated_total_days + buffer_days
+            date_fin_limite = date_debut_dt + \
+                timedelta(days=total_duration_days)
+
+            logger.debug(f"📊 BIG PLANNING constraints:")
+            logger.debug(f"   - Students: {nb_etudiants}")
+            logger.debug(
+                f"   - Total services across all years: {nb_services}")
+            logger.debug(f"   - Start date: {date_debut_dt}")
+            logger.debug(f"   - Estimated end date: {date_fin_limite}")
+            logger.debug(f"   - Total duration: {total_duration_days} days")
+            logger.debug(
+                f"   - MANDATORY COMPLETION: ALL students must complete ALL services from ALL years")
+
+        except Exception as e:
+            logger.error(f"❌ Error calculating big planning constraints: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error calculating big planning constraints: {str(e)}"
+            )
+
+        # Use ALL services from ALL years for mandatory completion
+        try:
+            logger.debug(
+                f"✅ Using ALL services from ALL years for mandatory completion:")
+            for service in all_services:
+                logger.debug(
+                    f"   - {service.nom} (duration: {service.duree_stage_jours} days, capacity: {service.places_disponibles})")
+
+            if nb_services == 0:
+                logger.error("❌ No services available")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Aucun service disponible"
+                )
+
+            logger.debug(f"📊 Mandatory completion requirements:")
+            logger.debug(
+                f"   - Each student must complete: {nb_services} services from all years")
+            logger.debug(
+                f"   - Total rotations needed: {nb_etudiants * nb_services}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error in service preparation: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error in service preparation: {str(e)}"
+            )
+
+        # Generate rotations for the big planning
+        try:
+            logger.debug(
+                f"🔄 Starting MANDATORY COMPLETION algorithm for BIG PLANNING:")
+            logger.debug(
+                f"   - Max iterations: {nb_etudiants * nb_services * 3}")
+            logger.debug(
+                f"   - Completion target: {nb_etudiants * nb_services} rotations")
+            logger.debug(
+                f"   - Extension allowed: planning can extend beyond original duration")
+
+            # Use the same mandatory completion algorithm but with all services
+            rotations = self._generate_mandatory_completion_rotations(
+                etudiants, all_services, settings, date_debut_dt, logger
+            )
+
+            # Create rotation records with appropriate year assignments
+            for i, (etudiant, service, start_date, end_date) in enumerate(rotations):
+                # Find which year this service belongs to
+                service_year_id = None
+                for year_id, year_services in all_services_by_year.items():
+                    if service in year_services:
+                        service_year_id = year_id
+                        break
+
+                rotation = Rotation(
+                    id=str(uuid.uuid4()),
+                    etudiant_id=etudiant.id,
+                    service_id=service.id,
+                    date_debut=start_date.strftime("%Y-%m-%d"),
+                    date_fin=end_date.strftime("%Y-%m-%d"),
+                    ordre=i + 1,
+                    planning_id=db_planning.id,
+                    promotion_year_id=service_year_id  # Assign to the appropriate year
+                )
+                db.add(rotation)
+
+            db.commit()
+            logger.info(f"🎉 BIG PLANNING MANDATORY COMPLETION SUCCESSFUL!")
+            logger.info(
+                f"   - All {nb_etudiants} students completed all {nb_services} services from all years")
+            logger.info(f"   - Total rotations: {len(rotations)}")
+
+            # Validate the big planning quality
+            self._validate_planning_quality(
+                db_planning, rotations, etudiants, all_services, settings)
+
+            return db_planning
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Error generating big planning rotations: {e}")
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error generating big planning rotations: {str(e)}"
+            )
 
     def _validate_planning_quality(self, planning, rotations, etudiants, services, settings):
         """Validate planning quality and return detailed metrics"""
